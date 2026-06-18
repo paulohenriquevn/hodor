@@ -71,6 +71,16 @@ describe("executeRequest", () => {
     expect(step.request.body).toBeUndefined();
   });
 
+  it("execute_request_throws_typed_error_on_timeout", async () => {
+    // Failure scenario #3: alvo que nunca responde + timeout curto → abort tipado.
+    const url = await listen(() => {
+      /* never calls res.end — request fica pendurado */
+    });
+    await expect(
+      executeRequest({ method: "GET", url }, { timeoutMs: 50 }),
+    ).rejects.toBeInstanceOf(RequestExecutionError);
+  });
+
   it("execute_request_captures_repeated_headers", async () => {
     const url = await listen((_req, res) => {
       res.setHeader("set-cookie", ["a=1", "b=2"]);
