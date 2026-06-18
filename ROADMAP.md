@@ -96,15 +96,17 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
-### M1 — [ ] Modelo de cenário multi-step + asserções
+### M1 — [x] Modelo de cenário multi-step + asserções
 
 **Objective:** Definir e executar o cenário como artefato de primeira classe: múltiplos steps encadeados com captura de variáveis e asserções.
 
 **Definition of done:**
 
-- [ ] Formato declarativo de cenário definido (steps ordenados; cada step = request + asserts; captura de variáveis da resposta para uso em steps seguintes).
-- [ ] Engine de execução roda o cenário step a step, propaga variáveis capturadas e avalia asserções (status, headers, body via jsonpath/regex).
-- [ ] Resultado do cenário registra, por step, request/response/headers + pass/fail de cada assert + valor das variáveis capturadas.
+- [x] Formato declarativo de cenário definido (steps ordenados; cada step = request + asserts; captura de variáveis da resposta para uso em steps seguintes).
+- [x] Engine de execução roda o cenário step a step, propaga variáveis capturadas e avalia asserções (status, headers, body via jsonpath/regex).
+- [x] Resultado do cenário registra, por step, request/response/headers + pass/fail de cada assert + valor das variáveis capturadas.
+
+**Delivered:** v0.2.0 (PR #2, merge `9ce0617`, tag `v0.2.0`) em 2026-06-18. Cenário declarativo **JSON** (`{schemaVersion:1, name, steps[]}`, validado por zod); engine `runScenario` (core puro) executa step-a-step, propaga variáveis capturadas (`${{ var }}`) via jsonpath (`jsonpath-plus`) / regex, e avalia asserts `{source,op,value}`→`{pass,expected,actual}` sobre status/headers/body. `RunStep` estendido de forma aditiva/opcional (reuso do envelope M0, backward-compatible — mitiga risco #1). Não reinventou DSL (estudou step-ci + hurl no DISCOVER — mitiga risco #1). Demo E2E real contra `jsonplaceholder` via stdio (captura `userId`→`/users/1`, todos asserts PASS). Artefatos: `knowledge-base/plans/m1-scenario-model-plan.md`, `.../reviews/m1-scenario-model-review-2026-06-18.md` (READY_TO_MERGE), `.../releases/v0.2.0-release.md`, `.../roadmap-runs/M1-2026-06-18.md`.
 
 **Dependencies:** M0.
 
