@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { runScenario } from "./runScenario.js";
-import { RequestExecutionError } from "./errors.js";
+import { RequestExecutionError, ScenarioError } from "./errors.js";
 import type { Scenario } from "./scenarioSchema.js";
 
 let server: Server | undefined;
@@ -109,6 +109,17 @@ describe("runScenario", () => {
       steps: [{ name: "x", request: { method: "GET", url: "http://127.0.0.1:1/nope" } }],
     };
     await expect(runScenario(scenario)).rejects.toBeInstanceOf(RequestExecutionError);
+  });
+
+  it("run_scenario_aborts_on_undefined_variable", async () => {
+    // Q2 via engine: step usa ${{ missing }} nunca capturada → ScenarioError ANTES do HTTP
+    const base = await listen();
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      name: "bad-var",
+      steps: [{ name: "x", request: { method: "GET", url: `${base}/posts/${"${{ missing }}"}` } }],
+    };
+    await expect(runScenario(scenario)).rejects.toBeInstanceOf(ScenarioError);
   });
 
   it("run_scenario_result_step_has_asserts_and_captures", async () => {

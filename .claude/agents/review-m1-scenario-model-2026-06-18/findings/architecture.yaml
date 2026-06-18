@@ -1,0 +1,226 @@
+agent: review-m1-scenario-model-architecture
+review_target: origin/main..develop for plan m1-scenario-model
+plan: .claude/knowledge-base/plans/m1-scenario-model-plan.md
+rules_read:
+  - .claude/rules/architecture.md
+  - .claude/knowledge-base/plans/m1-scenario-model-plan.md (ADRs D1-D5)
+summary_counts:
+  BLOCKER: 0
+  HIGH: 1
+  MEDIUM: 1
+  LOW: 2
+  INFO: 5
+findings:
+  # ---------------------------------------------------------------------------
+  # HIGH — DRY / encapsulation: jsonpath extraction duplicated across 2 modules
+  # ---------------------------------------------------------------------------
+  - id: F-arch-1
+    severity: HIGH
+    file: src/core/evalAssert.ts
+    line: 32
+    plan_ref: ADR D2 + T1.4 "Deep file dependency analysis" ("reusa evalCapture (jsonpath) p/ source jsonpath:")
+    summary: >-
+      jsonpath-plus extraction logic is duplicated in evalAssert.ts (lines 32-41) and
+      evalCapture.ts (lines 13-21) instead of evalAssert reusing evalCapture, violating
+      the plan's stated encapsulation boundary and DRY of business logic.
+    evidence: |
+      The task boundary constraint states jsonpath-plus must live ONLY in evalCapture.ts.
+      grep confirms it is imported in BOTH:
+        src/core/evalAssert.ts:1:  import { JSONPath } from "jsonpath-plus";
+        src/core/evalCapture.ts:1: import { JSONPath } from "jsonpath-plus";
+
+      The identical "parse body → JSONPath → first match or null, swallow parse error"
+      algorithm appears twice:
+
+      evalCapture.ts:13-21
+      ```ts
+      if (spec.jsonpath !== undefined) {
+        try {
+          const json = JSON.parse(response.body) as ...;
+          const matches = JSONPath({ path: spec.jsonpath, json, wrap: true }) as unknown[];
+          value = matches.length > 0 ? matches[0] : null;
+        } catch { return null; }
+      }
+      ```
+      evalAssert.ts:32-41
+      ```ts
+      if (source.startsWith("jsonpath:")) {
+        const path = source.slice("jsonpath:".length);
+        try {
+          const json = JSON.parse(response.body) as ...;
+          const matches = JSONPath({ path, json, wrap: true }) as unknown[];
+          return matches.length > 0 ? matches[0] : null;
+        } catch { return null; }
+      }
+      ```
+      Plan T1.4 "Deep file dependency analysis" explicitly says evalAssert "reusa
+      evalCapture (jsonpath) p/ source jsonpath:". It does not. This is duplication
+      of one knowledge (how Hodor evaluates a jsonpath against a response body) in
+      two places — Unbreakable Rule 12 (DRY of business logic). If jsonpath
+      semantics change (e.g. multi-match policy, wrap flag), two sites must change
+      in lockstep — a classic divergence bomb.
+    recommended_action: >-
+      Extract a single internal helper (e.g. `evalJsonPath(path, body): unknown` in
+      evalCapture.ts) and have evalAssert's `extractActual` call it for the
+      `jsonpath:` source. After the change, `grep -rn "jsonpath-plus" src/` should
+      resolve to evalCapture.ts only, matching ADR D2 + the task boundary contract.
+  # ---------------------------------------------------------------------------
+  # MEDIUM — duplicated request shape type instead of reusing schema-inferred type
+  # ---------------------------------------------------------------------------
+  - id: F-arch-2
+    severity: MEDIUM
+    file: src/core/interpolate.ts
+    line: 20
+    plan_ref: ADR D1 (ScenarioSchema is the single source of the format) + architecture.md §3 (minimize/own the contract)
+    summary: >-
+      interpolate.ts defines a local `InterpolatableRequest` interface that
+      hand-redeclares the request shape already owned by ScenarioStepSchema.request,
+      creating a second authoritative definition of the same domain shape.
+    evidence: |
+      src/core/interpolate.ts:20-25
+      ```ts
+      interface InterpolatableRequest {
+        method: string;
+        url: string;
+        headers?: Record<string, string>;
+        body?: string;
+      }
+      ```
+      The exact same shape is already the zod-inferred type of
+      `ScenarioStepSchema.request` (scenarioSchema.ts:41-46). ADR D1 declares the
+      zod schema the "fonte única do formato". Two declarations of the same shape
+      can silently diverge (e.g. when a `query?` or `timeout?` field is added to the
+      step request in M2) — interpolateRequest would compile against a stale shape.
+    recommended_action: >-
+      Export a `ScenarioRequest` type inferred from `ScenarioStepSchema.shape.request`
+      (or `z.infer`) in scenarioSchema.ts and import it in interpolate.ts instead of
+      the hand-written interface. Keeps the schema the single source of the request
+      contract.
+  # ---------------------------------------------------------------------------
+  # LOW — OCP shape of assert ops + capture/headers coupling note
+  # ---------------------------------------------------------------------------
+  - id: F-arch-3
+    severity: LOW
+    file: src/core/evalAssert.ts
+    line: 46
+    plan_ref: ADR D3 ("novos ops são adições (OCP)")
+    summary: >-
+      applyOp dispatches the 9 ops via a switch/case; adding an op requires editing
+      this function rather than registering an extension — strictly not OCP-closed,
+      though acceptable under KISS/YAGNI for a small fixed op set.
+    evidence: |
+      src/core/evalAssert.ts:46-69 — `function applyOp(op, actual, expected)` switch
+      over "equals"|"notEquals"|...|"lte". ADR D3 frames new ops as "adições (OCP)",
+      but each addition is a modification of applyOp, not an extension point. For 9
+      stable ops this is the simpler design (KISS) and the tension is explicitly
+      resolved in CLAUDE.md (SOLID vs YAGNI). Flagged for honesty, not as a defect to
+      fix now.
+    recommended_action: >-
+      No change required at M1. If the op set grows substantially (M2/M3) or becomes
+      user-pluggable, refactor to an `ops: Record<string, (a,e)=>boolean>` table so a
+      new op is a map entry (true OCP). Document the trade-off if kept as a switch.
+  - id: F-arch-4
+    severity: LOW
+    file: src/core/evalAssert.ts
+    line: 28
+    plan_ref: EC-1 (header case-insensitive) + Baseline Context "Current callers/dependents"
+    summary: >-
+      extractActual relies on the implicit invariant that response.headers keys are
+      lowercased by the M0 captureHeaders; the dependency is correct but undocumented
+      at the consumer, making it a latent coupling.
+    evidence: |
+      src/core/evalAssert.ts:26-29
+      ```ts
+      if (source.startsWith("header:")) {
+        const name = source.slice("header:".length).toLowerCase();
+        return response.headers[name];
+      }
+      ```
+      This is correct: src/core/executeRequest.ts:88 `Object.fromEntries(headers)` on
+      a fetch `Headers` yields lowercased keys per the Fetch spec, so the lowercased
+      lookup matches (EC-1 honored). But the invariant lives in executeRequest and is
+      assumed silently here. If a future code path populates CapturedResponse.headers
+      from a non-fetch source without lowercasing, this lookup breaks silently.
+    recommended_action: >-
+      Add a one-line comment already partly present; consider asserting/normalizing
+      the invariant at the CapturedResponseSchema boundary (e.g. a transform that
+      lowercases keys) so every consumer can rely on it rather than re-deriving it.
+  # ---------------------------------------------------------------------------
+  # INFO — boundary + reuse confirmations (clean)
+  # ---------------------------------------------------------------------------
+  - id: F-arch-5
+    severity: INFO
+    file: src/core/index.ts
+    line: 1
+    plan_ref: ADR D5 + architecture.md §1-§2 (core não importa mcp/web)
+    summary: "DIP boundary clean — core does not import from mcp/ or web/."
+    evidence: |
+      `grep -rn "from ['\"].*(mcp|web)" src/core/` returns nothing. Import direction
+      is mcp→core (server.ts:4-11) and web→core (render.ts:1-7) only. index.ts is the
+      single public surface and re-exports M1 symbols additively without removing M0
+      exports. boundary-check is satisfied.
+    recommended_action: "No action — boundary respected."
+  - id: F-arch-6
+    severity: INFO
+    file: src/core/runScenario.ts
+    line: 31
+    plan_ref: ADR D4/D5 + Coverage Matrix #8 (reuse M0 envelope sem refactor)
+    summary: "runScenario reuses M0 executeRequest + buildRunEnvelope without rewriting either."
+    evidence: |
+      runScenario.ts:1-2 imports `executeRequest` and `buildRunEnvelope` from M0
+      modules; line 31 calls executeRequest per step; line 44 calls buildRunEnvelope
+      to assemble the N-step envelope. No HTTP or envelope logic is reimplemented.
+      executeRequest signature unchanged (executeRequest.ts:27). D5 (engine in core,
+      reuses M0) and the anti-rework intent of D4 are honored.
+    recommended_action: "No action — reuse correct."
+  - id: F-arch-7
+    severity: INFO
+    file: src/core/runSchema.ts
+    line: 43
+    plan_ref: ADR D4 (RunStep aditivo opcional; schemaVersion mantido 1)
+    summary: "Backward-compat preserved — asserts/captures are .optional(), schemaVersion literal 1 unchanged."
+    evidence: |
+      runSchema.ts:47-48 `asserts: z.array(AssertResultSchema).optional()` and
+      `captures: z.record(z.unknown()).optional()`; RunEnvelopeSchema.schemaVersion
+      stays `z.literal(1)` (line 52). A RunStep without the new fields still parses,
+      so M0 runs and loadRun remain valid — additive, no migration (D4). buildRunEnvelope
+      keeps schemaVersion 1 (runStore.ts).
+    recommended_action: "No action — backward-compat correct."
+  - id: F-arch-8
+    severity: INFO
+    file: src/core/scenarioSchema.ts
+    line: 13
+    plan_ref: SRP / architecture.md §3 (one responsibility per module)
+    summary: "SRP clean — schema/interpolate/capture/assert/engine are separated into focused modules."
+    evidence: |
+      Five cohesive modules, each one reason to change: scenarioSchema.ts (format
+      contract), interpolate.ts (variable substitution), evalCapture.ts (extraction),
+      evalAssert.ts (verification), runScenario.ts (orchestration). No god module;
+      runScenario is pure orchestration delegating to the others. loadScenario validates
+      at the boundary (architecture.md §2).
+    recommended_action: "No action — module decomposition sound."
+  - id: F-arch-9
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 73
+    plan_ref: ADR D5 (tool run_scenario é adaptador; engine no core)
+    summary: "run_scenario tool is a thin adapter delegating 100% to core runScenario; run_request (M0) preserved."
+    evidence: |
+      server.ts:82-94 handler calls `runScenario(scenario)` + `persistRun` + metric;
+      no business logic in the adapter. inputSchema=ScenarioSchema.shape validates at
+      the MCP boundary. Existing run_request tool (lines 34-70) untouched. Wiring triad
+      pillar a (caller) + c (scenarioRunCount metric / stderr log) present.
+    recommended_action: "No action — adapter correct."
+  - id: F-arch-10
+    severity: INFO
+    file: src/web/render.ts
+    line: 58
+    plan_ref: ADR D4 (render exibe asserts/captures quando presentes; backward-compat)
+    summary: "render extension is additive and backward-compatible; all dynamic values escaped (anti-XSS preserved)."
+    evidence: |
+      render.ts:58-86 add assertsTable/capturesList; stepSection (lines 88-96) only
+      emits them when present (`step.asserts?.length`, `Object.keys(step.captures).length`),
+      so M0 runs without these fields render unchanged. escapeHtml applied to every
+      dynamic value including expected/actual/capture values (lines 65-68, 81) —
+      anti-XSS invariant from M0 maintained.
+    recommended_action: "No action — render extension safe and additive."

@@ -26,13 +26,12 @@ export {
   ScenarioStepSchema,
   AssertSpecSchema,
   CaptureSpecSchema,
-  loadScenario,
   type Scenario,
   type ScenarioStep,
   type AssertSpec,
   type CaptureSpec,
 } from "./scenarioSchema.js";
 export { runScenario, type RunScenarioDeps } from "./runScenario.js";
-export { interpolate, interpolateRequest } from "./interpolate.js";
-export { evalCapture } from "./evalCapture.js";
+export { interpolateRequest } from "./interpolate.js";
+export { evalCapture, evalJsonPath } from "./evalCapture.js";
 export { evalAssert } from "./evalAssert.js";

@@ -1,0 +1,173 @@
+agent: review-m1-scenario-model-cross-validation
+review_target: origin/main..develop for plan m1-scenario-model
+plan: .claude/knowledge-base/plans/m1-scenario-model-plan.md
+generated_at: 2026-06-18
+
+plan_tasks_summary:
+  total_tasks: 8           # T0.1, T1.1, T1.2, T1.3, T1.4, T1.5, T2.1, T3.1, T4.1 (T1.1-T1.5 = 5)
+  fully_implemented: 8
+  partial: 0
+  missing: 0
+  diverged: 0
+
+acceptance_criteria_summary:
+  total: 28
+  satisfied: 28
+  unverified: 0
+  false_claims: 0
+
+adr_compliance:
+  total_adrs: 5            # D1-D5
+  respected: 5
+  diverged_without_new_adr: 0
+
+coverage_matrix:
+  total_gaps: 8
+  resolved: 8
+  unresolved: 0
+
+roadmap_dod:
+  total: 3
+  satisfied: 3
+
+plan_drift:
+  plan_edited_after_implement: false
+  details: >
+    Plano commitado uma única vez em f7d13ee (docs(plan)) ANTES de todos os
+    commits de implementação (e10efe1, 213839a, 35eefc7, af982a4, 5774f93).
+    git log --follow do plano mostra 1 commit. Sem revisão mid-flight.
+
+task_to_commit_map:
+  - task: T0.1
+    commits: [e10efe1]
+    status: FULLY
+    note: jsonpath-plus@10.4.0 instalado; npm audit 0 vulnerabilidades; typecheck limpo.
+  - task: T1.1
+    commits: [213839a]
+    status: FULLY
+    note: scenarioSchema.ts criado; RunStepSchema += asserts?/captures? + AssertResultSchema; 4 RED tests verdes incl. backward-compat M0.
+  - task: T1.2
+    commits: [213839a, 5774f93]
+    status: FULLY
+    note: interpolate.ts + ScenarioError; var ausente -> ScenarioError (Q2); encodeURIComponent na URL (EC-3); 5 testes (2 adicionais em 5774f93).
+  - task: T1.3
+    commits: [213839a]
+    status: FULLY
+    note: evalCapture.ts encapsula jsonpath-plus (wrap:true, sem eval) + regex; miss/non-JSON -> null sem lançar.
+  - task: T1.4
+    commits: [213839a, 5774f93]
+    status: FULLY
+    note: evalAssert.ts 3 sources x 9 ops; EC-1 header case-insensitive; EC-2 coerção String; nunca lança; 11 testes.
+  - task: T1.5
+    commits: [213839a]
+    status: FULLY
+    note: runScenario.ts loop sequencial; propaga variables; reusa executeRequest+buildRunEnvelope M0; assert fail nao aborta, rede aborta (Q1); 5 testes vs http efêmero.
+  - task: T2.1
+    commits: [35eefc7]
+    status: FULLY
+    note: tool run_scenario (inputSchema=ScenarioSchema.shape, outputSchema=RunEnvelope); delega a runScenario; persistRun; getScenarioRunCount() + log stderr; run_request M0 preservada; 3 testes InMemoryTransport.
+  - task: T3.1
+    commits: [af982a4]
+    status: FULLY
+    note: assertsTable (pass/fail com cor) + capturesList; renderiza só quando presentes (backward-compat); escapa todo valor (anti-XSS); 4 testes novos + render M0 verde.
+  - task: T4.1
+    commits: [5774f93]
+    status: FULLY
+    note: scenario-e2e.test.ts e2e_scenario_multistep_captures_and_asserts verde (captura step1 -> propaga step2 -> asserts pass -> persiste -> web renderiza); getScenarioRunCount exercitado; CHANGELOG [Unreleased] atualizado.
+
+roadmap_dod_evidence:
+  - dod: "1. Formato declarativo de cenário definido (steps ordenados; step = request + asserts; captura de variáveis para steps seguintes)"
+    satisfied: true
+    evidence: >
+      src/core/scenarioSchema.ts ScenarioSchema = {schemaVersion:1, name, steps[].min(1)};
+      ScenarioStepSchema = {name, request, captures?, asserts?}. interpolate.ts propaga
+      ${{ var }}. Tasks T1.1+T1.2 (Coverage Matrix gap 1).
+  - dod: "2. Engine roda step-a-step, propaga variáveis e avalia asserções (status/headers/body via jsonpath/regex)"
+    satisfied: true
+    evidence: >
+      src/core/runScenario.ts loop sequencial: interpolateRequest -> executeRequest ->
+      evalAssert -> evalCapture -> variables = {...variables, ...captures}. evalAssert.ts
+      extractActual cobre status/header:<name>/jsonpath:<expr>; evalCapture jsonpath+regex.
+      Tasks T1.5/T1.3/T1.4 (gaps 2,3). Provado por run_scenario_propagates_captured_variable.
+  - dod: "3. Resultado por step: request/response/headers + pass/fail por assert + valor das variáveis capturadas"
+    satisfied: true
+    evidence: >
+      RunStep estendido com asserts:[{source,op,value,pass,expected,actual}] e
+      captures:{[name]:value}. runScenario faz steps.push({...runStep, asserts, captures}).
+      render.ts exibe assertsTable (PASS/FAIL + expected/actual) + capturesList.
+      Tasks T1.1/T1.5/T3.1 (gap 4). E2E confirma steps[0].captures={id:7}, asserts[].pass.
+
+goal_verification:
+  goal_metric: e2e_scenario_multistep_captures_and_asserts
+  status: GREEN
+  evidence: "npx vitest run src/scenario-e2e.test.ts -> Test Files 1 passed, Tests 1 passed."
+
+backward_compat_m0:
+  status: PRESERVED
+  evidence: >
+    RunStep ganhou asserts?/captures? .optional() (aditivo, schemaVersion mantido 1).
+    Testes M0 verdes: run_step_still_accepts_m0_shape, render_run_m0_step_without_asserts_still_renders,
+    mcp/server.test.ts (run_request), runStore.test.ts. 15/15 backward-compat tests pass.
+    executeRequest/buildRunEnvelope reusados sem mudança de assinatura.
+
+validation_reproduced:
+  npm_test: "64 passed (14 files) — PASS"
+  npm_typecheck: "tsc --noEmit 0 erros — PASS"
+  npm_audit: "0 vulnerabilities — PASS"
+  coverage_scenario_core: "95.94% lines (evalCapture 100%, runScenario 100%, evalAssert 96.29%) — PASS (>=90%)"
+  file_size_budget: "máx 134 linhas (render.ts) <= 500 — PASS"
+
+findings:
+  - id: F-xval-1
+    severity: LOW
+    file: .claude/agents/review-m1-scenario-model-2026-06-18/cross-validation.md
+    line: 88
+    plan_ref: "Output path do agente"
+    summary: >
+      O agent-spec instrui salvar findings em cross-validation.yml (.yml); o prompt do
+      /review pediu cross-validation.yaml (.yaml). Escrito em .yaml conforme o prompt.
+      Inconsistência de extensão entre os dois contratos — não afeta o código sob review.
+    evidence: |
+      cross-validation.md:88 -> "review-m1-scenario-model-2026-06-18/findings/cross-validation.yml"
+      prompt /review -> "findings/cross-validation.yaml"
+    recommended_action: Padronizar a extensão (.yaml) no agent-spec template do /review para futuras gerações.
+
+  - id: F-xval-2
+    severity: INFO
+    file: src/core/evalAssert.test.ts
+    line: 1
+    plan_ref: "T4.1 Final Phase (coverage >= 90%) + T1.2/T1.4"
+    summary: >
+      Commit 5774f93 (T4.1) adicionou testes extras a evalAssert.test.ts (gt/gte/lt/lte/
+      notEquals/exists/unknown-op) e interpolate.test.ts (headers/body). NÃO é scope creep:
+      a Final Phase do plano exige coverage >= 90% e caminhos de erro 100%; estes testes
+      fecham branches de ops/interpolação declarados nas Deep Dives de T1.4/T1.2.
+    evidence: |
+      git show 5774f93 --stat: evalAssert.test.ts +19, interpolate.test.ts +15 (apenas testes).
+      Plano T1.4 Deep Dives declara os 9 ops (gt/gte/lt/lte etc.).
+    recommended_action: Nenhuma — alinhado ao escopo declarado.
+
+  - id: F-xval-3
+    severity: INFO
+    file: src/core/evalAssert.ts
+    line: 38
+    plan_ref: "T1.4 Deep Dives — EC-1 header case-insensitive (invariante depende do M0)"
+    summary: >
+      EC-1 (lookup case-insensitive de header) é correto em runtime: o M0 captura headers
+      via Object.fromEntries(WHATWG Headers) em executeRequest.ts:85, que sempre produz
+      nomes lowercased per Fetch spec. evalAssert faz source.slice('header:').toLowerCase().
+      Invariante verificado, não apenas asserido. Teste eval_assert_header_case_insensitive cobre.
+    evidence: |
+      src/core/executeRequest.ts:85 captureHeaders -> Object.fromEntries(headers)
+      src/core/evalAssert.ts:38 -> source.slice('header:'.length).toLowerCase()
+    recommended_action: Nenhuma — corretude confirmada.
+
+blockers: []
+high: []
+verdict_contribution: NO_BLOCKERS_NO_HIGH
+summary: >
+  Implementação M1 corresponde linha-a-linha ao plano. 8/8 tasks FULLY implementadas,
+  28/28 Acceptance Criteria satisfeitos, 5/5 ADRs (D1-D5) respeitados sem divergência,
+  8/8 gaps da Coverage Matrix resolvidos no código, 3/3 DoDs do ROADMAP §M1 evidenciados,
+  Goal (e2e_scenario_multistep_captures_and_asserts) verde, backward-compat M0 preservada
+  (RunStep aditivo opcional). Sem plan drift. Sem scope creep. Nenhum BLOCKER ou HIGH.

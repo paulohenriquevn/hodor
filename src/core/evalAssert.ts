@@ -1,4 +1,4 @@
-import { JSONPath } from "jsonpath-plus";
+import { evalJsonPath } from "./evalCapture.js";
 import type { AssertSpec } from "./scenarioSchema.js";
 import type { AssertResult, CapturedResponse } from "./runSchema.js";
 
@@ -30,14 +30,8 @@ function extractActual(source: string, response: CapturedResponse): unknown {
   }
 
   if (source.startsWith("jsonpath:")) {
-    const path = source.slice("jsonpath:".length);
-    try {
-      const json = JSON.parse(response.body) as string | number | boolean | object | null;
-      const matches = JSONPath({ path, json, wrap: true }) as unknown[];
-      return matches.length > 0 ? matches[0] : null;
-    } catch {
-      return null;
-    }
+    // DRY (F-arch-1): reusa o único avaliador jsonpath do domínio.
+    return evalJsonPath(source.slice("jsonpath:".length), response.body);
   }
 
   return null;
@@ -51,8 +45,11 @@ function applyOp(op: string, actual: unknown, expected: unknown): boolean {
       return actual !== expected;
     case "contains":
       // EC-2: coerção a string antes de includes (actual pode ser numérico).
+      // F-dom-4: actual ausente NÃO contém nada (evita falso-positivo "null").
+      if (actual === null || actual === undefined) return false;
       return String(actual).includes(String(expected));
     case "matches":
+      if (actual === null || actual === undefined) return false;
       return new RegExp(String(expected)).test(String(actual));
     case "exists":
       return actual !== null && actual !== undefined;

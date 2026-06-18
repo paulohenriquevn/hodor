@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
 
 /**
  * Schema do cenário multi-step do M1 (ADR D1).
@@ -59,8 +58,6 @@ export type AssertSpec = z.infer<typeof AssertSpecSchema>;
 export type ScenarioStep = z.infer<typeof ScenarioStepSchema>;
 export type Scenario = z.infer<typeof ScenarioSchema>;
 
-/** Lê e VALIDA um cenário do disco (validação na fronteira, architecture.md §2). */
-export async function loadScenario(path: string): Promise<Scenario> {
-  const raw = await readFile(path, "utf8");
-  return ScenarioSchema.parse(JSON.parse(raw));
-}
+// Nota (F-wire-1): load-from-disk (loadScenario) é YAGNI no M1 — a tool MCP
+// `run_scenario` recebe o cenário JSON validado na fronteira via inputSchema.
+// Um helper de leitura de arquivo entra quando M2 (UI/CLI) tiver fluxo de disco.

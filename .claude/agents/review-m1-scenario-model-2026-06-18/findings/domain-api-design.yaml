@@ -1,0 +1,235 @@
+agent: review-m1-scenario-model-domain-api-design
+review_target: main..HEAD for plan m1-scenario-model
+domain: api-design
+domain_specific_patterns_checked:
+  - "scenario declarative format {schemaVersion,name,steps[]} (ADR D1)"
+  - "capture model {jsonpath?,regex?} via jsonpath-plus first-match, no eval (ADR D2)"
+  - "variable propagation via ${{ var }} interpolation (ADR D2)"
+  - "assert model {source,op,value} -> {pass,expected,actual} (ADR D3)"
+  - "M0 envelope reuse: RunStep += optional asserts/captures, schemaVersion stays 1 (ADR D4)"
+  - "engine in core, run_scenario MCP tool as adapter (ADR D5)"
+  - "DoD coverage: status / header / body(jsonpath,regex) asserts"
+  - "assert-fail does not abort vs network-fail aborts (Q1)"
+  - "interpolation of undefined variable fail-fast (Q2)"
+  - "run_scenario tool contract inputSchema=ScenarioSchema.shape / outputSchema=RunEnvelopeSchema.shape"
+
+summary: |
+  O modelo declarativo de cenário está coerente, completo para o DoD do M1
+  (steps + captures jsonpath/regex + asserts status/header/body) e bem alinhado
+  aos ADRs D1-D5. jsonpath-plus é usado corretamente (wrap:true, primeiro match,
+  sem eval/script). A propagação de variáveis está correta e provada por teste.
+  A separação de Q1 (assert-fail registra e segue; network-fail aborta) está
+  implementada exatamente como decidido. NENHUM BLOCKER. As ressalvas são de
+  modelagem/escala para M4/M5: (1) abort de rede mid-cenário descarta os steps
+  já executados (sem resultado parcial observável) — limita regressão/diagnóstico
+  do M4/M5; (2) açúcar `check.status` decidido em D3 não foi implementado (só a
+  forma explícita existe); (3) `equals` usa `===` estrito, sensível a tipo
+  entre header(string) e value(number/JSON); (4) coerção `String(actual)` em
+  contains/matches gera falso-positivo quando actual é null/undefined.
+
+findings:
+  - id: F-dom-1
+    severity: MEDIUM
+    file: src/core/runScenario.ts
+    line: 28
+    plan_ref: "Unresolved Question Q1 / Failure scenarios (network abort) / D4 envelope reuse"
+    domain_anchor: "ADR D4 — resultado por step inspecionável (alinha M2/M3); ROADMAP §M1 'resultado por step'"
+    summary: >-
+      Abort por falha de rede num step intermediário descarta TODOS os steps já
+      executados — o erro propaga e nada é retornado/persistido. Para uma
+      ferramenta de teste de API isso significa perda total de observabilidade
+      do ponto de quebra (qual step falhou, o que os steps anteriores
+      retornaram). O modelo escala mal para M4/M5 (geração/regressão precisa
+      saber ONDE o cenário quebrou e com qual estado parcial).
+    evidence: |
+      ```ts
+      for (const step of scenario.steps) {
+        const request = interpolateRequest(step.request, variables);
+        // Falha de rede lança RequestExecutionError -> aborta o cenário (não engole).
+        const runStep = await executeRequest(request, { timeoutMs: deps.timeoutMs });
+        ...
+        steps.push({ ...runStep, asserts, captures });
+      }
+      return buildRunEnvelope(steps, deps);
+      ```
+      Se `executeRequest` lança no step 2 de 3, o `for` interrompe, `steps`
+      (com o step 1 completo) é perdido, e `runScenario` rejeita. O envelope
+      parcial nunca é construído.
+    recommended_action: >-
+      Decisão consciente para M1 é aceitável (fail-fast, Q1), mas registrar como
+      limitação explícita de modelo: avaliar para M4/M5 um envelope parcial com
+      um marcador de step com `error` (ex.: RunStep com `error?: {message}`)
+      em vez de descartar tudo. Não bloquear M1; documentar a evolução prevista
+      no plano/ADR para evitar refactor surpresa no M4.
+
+  - id: F-dom-2
+    severity: LOW
+    file: src/core/scenarioSchema.ts
+    line: 22
+    plan_ref: "ADR D3 — 'check.status: N é açúcar para {source:status,op:equals,value:N}'"
+    domain_anchor: "Blueprint ADR D3 / Cross-cutting Comparison (linha 'Assert: check.status açúcar')"
+    summary: >-
+      O blueprint e o ADR D3 declaram `check.status` (estilo step-ci) como
+      açúcar de `{source:"status",op:"equals",value:N}`. O schema implementa
+      SOMENTE a forma explícita `asserts:[{source,op,value}]` — não há `check`
+      nem qualquer atalho. Divergência entre o contrato declarado e o
+      implementado (não é bug; é ergonomia ausente).
+    evidence: |
+      AssertSpecSchema só aceita {source, op, value?}; nenhum campo `check`
+      no ScenarioStepSchema:
+      ```ts
+      export const ScenarioStepSchema = z.object({
+        name: z.string(),
+        request: z.object({ ... }),
+        captures: z.record(CaptureSpecSchema).optional(),
+        asserts: z.array(AssertSpecSchema).optional(),
+      });
+      ```
+      Plano T1.1 Deep Dives também só define a forma explícita — o açúcar D3
+      foi silenciosamente cortado (YAGNI razoável, mas não anotado como tal).
+    recommended_action: >-
+      Aceitável por YAGNI no M1 (autor é o agente, emite a forma explícita sem
+      atrito). Recomendo apenas anotar no plano/ADR que `check.status` foi
+      deliberadamente adiado para M2 (UI/YAML authoring), para o contrato
+      declarado não divergir do entregue sem rastro.
+
+  - id: F-dom-3
+    severity: LOW
+    file: src/core/evalAssert.ts
+    line: 48
+    plan_ref: "ADR D3 — assert model {source,op,value}; ops mínimos"
+    domain_anchor: "Blueprint ADR D3 (equals/notEquals); DoD 'asserts de header/body'"
+    summary: >-
+      O op `equals`/`notEquals` usa comparação estrita `===`. `source:"header:x"`
+      sempre retorna string; `source:"status"` sempre número; o `value` vem do
+      JSON do cenário com o tipo literal escrito. Um assert
+      `{source:"header:content-length", op:"equals", value:42}` (number)
+      NUNCA passa (string "42" !== number 42), sem nenhum sinal ao autor além
+      de pass:false. Armadilha de tipo previsível no modelo.
+    evidence: |
+      ```ts
+      case "equals":
+        return actual === expected;   // header actual é string; value pode ser number
+      ```
+      extractActual para header retorna `response.headers[name]` (string);
+      para status retorna `response.status` (number). Sem normalização de tipo
+      por source.
+    recommended_action: >-
+      Documentar no schema/README a regra de tipo por source (header=string,
+      status=number, jsonpath=tipo JSON), OU oferecer coerção numérica quando
+      ambos são numéricos. Não bloquear M1; é ergonomia/contrato. Mantém OCP
+      para adicionar a regra depois.
+
+  - id: F-dom-4
+    severity: LOW
+    file: src/core/evalAssert.ts
+    line: 52
+    plan_ref: "Edge-cases EC-2 (coerção String) / ADR D3 ops contains/matches"
+    domain_anchor: "DoD 'asserts de body via jsonpath/regex'"
+    summary: >-
+      `contains` e `matches` fazem `String(actual)`. Quando `actual` é `null`
+      (jsonpath miss / source inválido), `String(null) === "null"`. Logo
+      `{source:"jsonpath:$.ausente", op:"contains", value:"ull"}` retorna
+      pass:true sobre um campo INEXISTENTE — falso-positivo. Mesmo risco com
+      `matches` (ex.: regex `null` casa). Compromete a confiabilidade do assert
+      de body para M4/M5 (regressão poderia 'passar' por engano).
+    evidence: |
+      ```ts
+      case "contains":
+        return String(actual).includes(String(expected));  // String(null)="null"
+      case "matches":
+        return new RegExp(String(expected)).test(String(actual));
+      ```
+      Combinado com extractActual retornando `null` em miss (linha 37/43),
+      um campo ausente vira a literal "null" e pode casar.
+    recommended_action: >-
+      Curto-circuitar contains/matches quando `actual == null` → pass:false
+      (campo ausente não "contém" nada). Pequeno fix de robustez; não bloqueia
+      M1 mas vale antes do M4 (regressão) para não mascarar miss como match.
+
+  - id: F-dom-5
+    severity: LOW
+    file: src/core/interpolate.ts
+    line: 35
+    plan_ref: "Drawbacks & Risks (interpolação em URL) / EC-3 encodeURIComponent"
+    domain_anchor: "ADR D2 — propagação por interpolação ${{ var }}"
+    summary: >-
+      `interpolateRequest` aplica `encodeURIComponent` em TODAS as variáveis ao
+      interpolar na URL, indiscriminadamente. Isso protege segmentos de path
+      (correto, EC-3), mas impede legitimamente compor query strings a partir de
+      uma variável capturada que contenha `=`/`&` (ficam percent-encoded). É uma
+      escolha conservadora correta para o DoD do M1, mas o modelo não distingue
+      'valor em segmento' de 'valor em query' — limita cenários reais no M4/M5.
+    evidence: |
+      ```ts
+      const urlEncodedVars: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(variables)) {
+        urlEncodedVars[k] = encodeURIComponent(String(v));
+      }
+      result.url = interpolate(request.url, urlEncodedVars);
+      ```
+      Headers e body usam `variables` cru (sem encode) — distinção correta.
+      Mas toda var na URL é encodada, mesmo quando o autor pretendia compor
+      query string.
+    recommended_action: >-
+      Aceitável no M1. Para M4/M5 considerar um modelo de interpolação ciente
+      de posição (path vs query) ou um filtro opcional `raw`. Documentar a
+      limitação no schema. Não bloqueia.
+
+  - id: F-dom-6
+    severity: INFO
+    file: src/core/scenarioSchema.ts
+    line: 47
+    plan_ref: "EC-4 variáveis flat (sem prefixo captures.) / step-ci usa ${{captures.id}}"
+    domain_anchor: "ADR D2 / Cross-cutting Comparison (Interpolação)"
+    summary: >-
+      O namespace de variáveis é flat (`${{ id }}`), divergindo do step-ci
+      (`${{ captures.id }}`). Decisão EC-4 documentada e coerente para o M1
+      (só há capturas). Mas o M4 (geração) e M5 (regressão) provavelmente
+      introduzem outras fontes (env, secrets, faker). Um namespace flat pode
+      colidir (uma captura `host` sobrescrevendo um env `host`). Sinalizo para
+      ser decidido ANTES do M4 — não é defeito do M1.
+    evidence: |
+      interpolate.ts usa `name in variables` num único mapa flat; runScenario
+      faz `variables = { ...variables, ...captures }` (capturas posteriores
+      sobrescrevem anteriores e qualquer outra fonte futura, sem isolamento).
+    recommended_action: >-
+      Registrar no plano do M4 a decisão de namespacing (flat vs
+      captures./env./vars.) antes de adicionar segunda fonte de variáveis,
+      para não exigir refactor de interpolate + cenários existentes.
+
+  - id: F-dom-7
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 79
+    plan_ref: "ADR D5 / T2.1 — inputSchema=ScenarioSchema.shape, outputSchema=RunEnvelopeSchema.shape"
+    domain_anchor: "Wiring triad pillar a (caller de produção) / contrato MCP da tool"
+    summary: >-
+      O contrato da tool `run_scenario` está correto: inputSchema = shape do
+      ScenarioSchema (valida o cenário na fronteira MCP), outputSchema = shape
+      do RunEnvelope (publicado em tools/list, valida structuredContent). O
+      structuredContent retornado inclui asserts/captures opcionais — todos
+      JSON-serializáveis (primitivos/null/objetos do jsonpath). run_request do
+      M0 preservado. Não há finding — registro a verificação positiva do
+      contrato pedido na missão.
+    evidence: |
+      ```ts
+      server.registerTool("run_scenario", {
+        inputSchema: ScenarioSchema.shape,
+        outputSchema: RunEnvelopeSchema.shape,
+      }, async (scenario) => {
+        const env = await runScenario(scenario);   // caller de produção (pillar a)
+        const path = await persistRun(env);
+        scenarioRunCount += 1;                       // runtime metric (pillar c)
+        ...
+      });
+      ```
+    recommended_action: >-
+      Nenhuma ação. Contrato correto e backward-compatible com o M0.
+
+blocker_count: 0
+high_count: 0
+medium_count: 1
+low_count: 4
+info_count: 2
+verdict_contribution: "Nenhum BLOCKER/HIGH no domínio api-design. 1 MEDIUM (perda de resultado parcial no abort de rede — limitação de modelo para M4/M5) + 4 LOW + 2 INFO. Modelo coerente e completo para o DoD do M1."
