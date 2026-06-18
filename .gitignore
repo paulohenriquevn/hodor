@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+*.swp
+
+# Cloned SOTA reference repositories (study material, read-only, each has its own .git)
+# Kept locally for citation-existence checks; not versioned in this repo.
+.claude/knowledge-base/references/*/
+
+# Ralph-loop local state (per-machine)
+ralph-loop.local.md
+.compaction-snapshots/
