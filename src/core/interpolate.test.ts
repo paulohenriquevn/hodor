@@ -23,4 +23,19 @@ describe("interpolate", () => {
     // espaço, / e ? devem ser percent-encoded na URL
     expect(out.url).toBe("https://api.test/q/a%20b%2Fc%3Fd");
   });
+
+  it("interpolate_request_substitutes_headers_and_body", () => {
+    const out = interpolateRequest(
+      {
+        method: "POST",
+        url: "https://api.test/x",
+        headers: { authorization: "Bearer ${{ token }}" },
+        body: '{"ref":"${{ id }}"}',
+      },
+      { token: "abc", id: 7 },
+    );
+    // headers e body NÃO são url-encoded (só a URL é)
+    expect(out.headers).toEqual({ authorization: "Bearer abc" });
+    expect(out.body).toBe('{"ref":"7"}');
+  });
 });

@@ -61,4 +61,23 @@ describe("evalAssert", () => {
     ).not.toThrow();
     expect(evalAssert({ source: "status", op: "contains", value: "20" }, resp()).pass).toBe(true);
   });
+
+  it("eval_assert_numeric_comparisons", () => {
+    expect(evalAssert({ source: "status", op: "gt", value: 100 }, resp()).pass).toBe(true);
+    expect(evalAssert({ source: "status", op: "gte", value: 200 }, resp()).pass).toBe(true);
+    expect(evalAssert({ source: "status", op: "lt", value: 300 }, resp()).pass).toBe(true);
+    expect(evalAssert({ source: "status", op: "lte", value: 200 }, resp()).pass).toBe(true);
+    expect(evalAssert({ source: "status", op: "gt", value: 999 }, resp()).pass).toBe(false);
+  });
+
+  it("eval_assert_not_equals_and_exists", () => {
+    expect(evalAssert({ source: "status", op: "notEquals", value: 404 }, resp()).pass).toBe(true);
+    expect(evalAssert({ source: "jsonpath:$.ok", op: "exists" }, resp()).pass).toBe(true);
+    expect(evalAssert({ source: "jsonpath:$.missing", op: "exists" }, resp()).pass).toBe(false);
+  });
+
+  it("eval_assert_unknown_op_is_false", () => {
+    // op fora do enum (defensivo) → pass:false, não lança
+    expect(evalAssert({ source: "status", op: "weird" as never }, resp()).pass).toBe(false);
+  });
 });
