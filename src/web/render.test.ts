@@ -60,3 +60,49 @@ describe("renderRun", () => {
     expect(occurrences).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe("renderRun (M1 — asserts/captures)", () => {
+  it("render_run_shows_assert_pass_and_fail", () => {
+    const html = renderRun(
+      envelope([
+        step({
+          asserts: [
+            { source: "status", op: "equals", value: 201, pass: true, expected: 201, actual: 201 },
+            { source: "jsonpath:$.ok", op: "equals", value: false, pass: false, expected: false, actual: true },
+          ],
+        }),
+      ]),
+    );
+    expect(html).toContain("PASS");
+    expect(html).toContain("FAIL");
+    expect(html).toContain("class='fail'");
+  });
+
+  it("render_run_shows_captured_variables", () => {
+    const html = renderRun(envelope([step({ captures: { id: 7 } })]));
+    expect(html).toContain("Captures");
+    expect(html).toContain("id");
+    expect(html).toContain("7");
+  });
+
+  it("render_run_escapes_assert_values", () => {
+    const html = renderRun(
+      envelope([
+        step({
+          asserts: [
+            { source: "jsonpath:$.x", op: "equals", value: "<script>", pass: false, expected: "<script>", actual: "y" },
+          ],
+        }),
+      ]),
+    );
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("render_run_m0_step_without_asserts_still_renders", () => {
+    // backward-compat: step M0 (sem asserts/captures) renderiza sem seções extras nem erro
+    const html = renderRun(envelope([step()]));
+    expect(html).toContain("Step 1");
+    expect(html).not.toContain("<h3>Asserts</h3>");
+  });
+});

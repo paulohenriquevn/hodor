@@ -1,0 +1,169 @@
+agent: review-m1-scenario-model-tests
+review_target: develop (M1 commits e10efe1..5fcd47a) for plan m1-scenario-model
+plan: .claude/knowledge-base/plans/m1-scenario-model-plan.md
+date: 2026-06-18
+verdict: PASS_WITH_FINDINGS  # 0 BLOCKER, 0 HIGH; 1 MEDIUM, 5 LOW
+
+summary: >
+  Suite M1 é sólida: 64/64 testes verdes; pirâmide correta (muitos unit puros de
+  interpolate/evalCapture/evalAssert, integração real de runScenario e da tool MCP
+  via http.Server efêmero + InMemoryTransport, 1 E2E representativo). AAA limpo,
+  nomes descrevem comportamento, zero .skip/.only/comentado. Coverage do core de
+  cenário ≥ 90% (statements/lines 96-100%). Edge cases declarados (EC-1 header
+  case-insensitive, EC-2 coerção, EC-3 url-encode, Q1 network abort, Q2 var ausente)
+  estão exercitados — exceto Q2, que é testado só no nível de unidade `interpolate`,
+  nunca via `runScenario` (a fronteira que de fato propaga). Os 3 failure scenarios
+  do plano estão verdes. Backward-compat M0 testada (run_step_still_accepts_m0_shape,
+  render_run_m0_step_without_asserts_still_renders). Gaps: `loadScenario` (fronteira
+  de I/O + validação) sem nenhum teste; invariante CaptureSpec "≥1 de jsonpath/regex"
+  sem teste; ramo jsonpath+regex combinado de evalCapture sem teste.
+
+test_pyramid:
+  unit_added: 33        # scenarioSchema(4) + interpolate(5) + evalCapture(4) + evalAssert(11) + render M1(4) + outros
+  integration_added: 8  # runScenario(5) + mcp scenario(3)
+  e2e_added: 1          # scenario-e2e(1)
+  total_m1: 42
+  pyramid_ok: true
+  notes: >
+    Pirâmide correta e não-invertida. runScenario e scenario.test são integração
+    GENUÍNA (http.Server real + executeRequest real + InMemoryTransport real — não
+    mockam o mundo). E2E único e representativo (agente→MCP→core→arquivo→web).
+
+edge_cases_from_plan:
+  covered:
+    - "EC-1 header case-insensitive (eval_assert_header_case_insensitive)"
+    - "EC-2 coerção a string em contains (eval_assert_contains_coerces_to_string)"
+    - "EC-3 encodeURIComponent na URL (interpolate_request_encodes_url_value)"
+    - "Q1 falha de rede aborta cenário (run_scenario_aborts_on_network_error)"
+    - "evalCapture miss/non-JSON → null (eval_capture_returns_null_on_miss / _non_json_body)"
+    - "evalAssert nunca lança em source ruim (eval_assert_never_throws_on_bad_source)"
+    - "backward-compat M0 (run_step_still_accepts_m0_shape, render_run_m0_step_without_asserts_still_renders)"
+    - "3 failure scenarios do plano (network abort, jsonpath miss→null, assert fail registrado)"
+  missing:
+    - "Q2 (var ausente → ScenarioError) NÃO exercitada via runScenario — só no unit de interpolate"
+    - "loadScenario (read + ScenarioSchema.parse) — fronteira de I/O sem nenhum teste"
+    - "CaptureSpec.refine '≥1 de jsonpath/regex' — capture spec vazio rejeitado, sem teste"
+    - "evalCapture com jsonpath E regex combinados (ramo declarado no Deep Dive D2) — sem teste"
+
+coverage_new_core_files:
+  scenarioSchema.ts: { stmts: "n/a (medido junto)", note: "loadScenario uncovered" }
+  interpolate.ts: { stmts: ">=96", lines: ">=96" }
+  evalCapture.ts: { stmts: 100, branch: 84.61, lines: 100, uncovered: "L25 (ramo regex pós-jsonpath)" }
+  evalAssert.ts: { stmts: 96.29, branch: 95, lines: 96.15, uncovered: "L43 (return null final de extractActual)" }
+  runScenario.ts: { stmts: 100, branch: 80, lines: 100, uncovered: "L33 (asserts ?? [] quando step sem asserts)" }
+  render.ts: { stmts: 89.65, branch: 83.33, lines: 95.83, uncovered: "L36 (binary body branch — pré-existente M0)" }
+  threshold_met: true  # >=90% stmts/lines em todos os arquivos novos do core
+
+findings:
+  - id: F-tests-1
+    severity: MEDIUM
+    file: src/core/runScenario.test.ts
+    line: 28
+    plan_ref: 'Q2 (Unresolved Questions) + T1.5 Deep Dives "interpola url/headers/body de cada step antes de executar"'
+    summary: >
+      Q2 (variável ausente → ScenarioError, fail-fast) é testada apenas em
+      interpolate.test.ts (unit puro). Nenhum teste de runScenario prova que um
+      step usando ${{ var }} com a variável NÃO capturada aborta o cenário com
+      ScenarioError. A engine é a fronteira onde isso de fato acontece (interpola
+      antes de executeRequest) — o comportamento end-to-end de Q2 não é coberto.
+    evidence: |
+      grep -rn 'ScenarioError|undefined' src/core/runScenario.test.ts -> 0 matches
+      (interpolate_throws_on_undefined_variable cobre só a função pura)
+      runScenario.ts:29 chama interpolateRequest, que lança ScenarioError;
+      nenhum teste exercita esse caminho via runScenario.
+    recommended_action: >
+      Adicionar test "run_scenario_throws_when_step_references_uncaptured_variable":
+      cenário 1-step com url '/x/${{ ausente }}' e captures vazias → runScenario
+      rejeita com ScenarioError ANTES de qualquer chamada HTTP.
+
+  - id: F-tests-2
+    severity: LOW
+    file: src/core/scenarioSchema.test.ts
+    line: 66
+    plan_ref: 'T1.1 Tasks #3 "loadScenario(path) (read + ScenarioSchema.parse)"'
+    summary: >
+      loadScenario — a fronteira que lê o cenário do disco e o valida (validação
+      na fronteira, architecture.md §2) — não tem nenhum teste. JSON inválido /
+      schema inválido / arquivo inexistente não têm prova de comportamento.
+    evidence: |
+      grep -rn 'loadScenario' src/ -> apenas scenarioSchema.ts:63 (def) e index.ts:29 (export)
+      Nenhum .test.ts referencia loadScenario.
+    recommended_action: >
+      Adicionar 2 testes: "load_scenario_parses_valid_file" (escreve JSON válido
+      em tmp, loadScenario retorna Scenario) e "load_scenario_rejects_invalid_schema"
+      (JSON com steps:[] → throws ZodError).
+
+  - id: F-tests-3
+    severity: LOW
+    file: src/core/scenarioSchema.test.ts
+    line: 42
+    plan_ref: 'T1.1 Deep Dives "CaptureSpecSchema ... (>=1 presente)"'
+    summary: >
+      O invariante de domínio "capture spec exige jsonpath e/ou regex"
+      (CaptureSpecSchema.refine) não é exercitado. Um capture spec vazio `{}`
+      deveria ser rejeitado pelo schema, mas nenhum teste prova isso.
+    evidence: |
+      scenarioSchema.ts:18 .refine(s => s.jsonpath !== undefined || s.regex !== undefined)
+      scenarioSchema.test.ts só testa accepts_valid_multistep e rejects_empty_steps.
+    recommended_action: >
+      Adicionar "scenario_schema_rejects_empty_capture_spec": step com
+      captures:{x:{}} → safeParse.success === false.
+
+  - id: F-tests-4
+    severity: LOW
+    file: src/core/evalCapture.test.ts
+    line: 31
+    plan_ref: 'T1.3 Deep Dives "jsonpath+regex → aplica regex no resultado do jsonpath"'
+    summary: >
+      O ramo combinado jsonpath + regex (declarado explicitamente no Deep Dive D2)
+      não tem teste. Os 4 testes cobrem jsonpath-só, miss, non-JSON e regex-só,
+      mas não a composição (extrair via jsonpath e DEPOIS filtrar via regex).
+      Corresponde à branch uncovered evalCapture.ts:25 (branch coverage 84.61%).
+    evidence: |
+      evalCapture.ts:23 `if (spec.regex !== undefined && value !== null ...)`
+      após o bloco jsonpath — nenhum teste fornece {jsonpath, regex} juntos.
+    recommended_action: >
+      Adicionar "eval_capture_applies_regex_to_jsonpath_result": spec
+      {jsonpath:"$.v", regex:"(\\d+)"} sobre '{"v":"build-42"}' → "42".
+
+  - id: F-tests-5
+    severity: LOW
+    file: src/web/render.test.ts
+    line: 86
+    plan_ref: 'T3.1 Deep Dives "Invariant: escapa todo valor dinâmico (anti-XSS)"'
+    summary: >
+      render_run_escapes_assert_values prova escaping de expected/actual na tabela
+      de asserts, mas NÃO há teste de escaping do VALOR de uma capture. capturesList
+      escapa corretamente (render.ts:81 escapeHtml(String(v))), porém o teste
+      render_run_shows_captured_variables usa valor benigno (id:7) — a invariante
+      anti-XSS para captures fica não-provada (regressão silenciosa possível).
+    evidence: |
+      render.ts:81 escapa o valor; render_run_shows_captured_variables usa {id:7}.
+      Nenhum teste passa um valor de capture com '<script>' / '<' a renderizar.
+    recommended_action: >
+      Estender ou adicionar teste: captures:{x:"<script>"} → html NÃO contém
+      "<script>" literal e contém "&lt;script&gt;".
+
+  - id: F-tests-6
+    severity: LOW
+    file: src/core/scenarioSchema.test.ts
+    line: 1
+    plan_ref: 'rules/testing.md §3 (RED antes de GREEN) + cycle-implement RED→GREEN'
+    summary: >
+      Para T1.1–T1.5 (commit 213839a) o teste e a implementação foram commitados
+      JUNTOS no mesmo commit (scenarioSchema.test.ts + scenarioSchema.ts etc. no
+      mesmo diff). A ordem RED-antes-de-GREEN não é verificável pelo histórico git.
+      Mesmo padrão do M0 — informativo, não bloqueante (suíte é genuína e verde).
+    evidence: |
+      git show --stat 213839a -> *.test.ts e *.ts dos 5 módulos no mesmo commit.
+    recommended_action: >
+      Convenção futura: commitar o RED (teste falhando) separado do GREEN para que
+      a disciplina TDD seja auditável no histórico. Não exige ação corretiva no M1.
+
+notes_positive:
+  - "runScenario e mcp/scenario são integração real (http.Server + executeRequest + InMemoryTransport) — sem over-mock; alinhado a testing.md §6."
+  - "Asserts testam comportamento observável (pass/expected/actual, URL propagada), não estrutura interna."
+  - "evalAssert cobre os 9 ops + op desconhecido defensivo (eval_assert_unknown_op_is_false) + nunca-lança — excelente cobertura de edge."
+  - "E2E é único, estável e representativo (não persegue edge cases) — correto por testing.md §2."
+  - "Zero .skip / .only / it.only / xit / teste comentado encontrado."
+  - "Determinístico: now/newId injetados nos testes de runScenario; sem time/random real."

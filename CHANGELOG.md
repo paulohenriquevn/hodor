@@ -18,6 +18,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 
 ### Security
 
+## [0.2.0] - 2026-06-18
+
+### Added
+- **M1 — Modelo de cenário multi-step + asserções:** cenário declarativo JSON (`{schemaVersion, name, steps[]}`) validado por zod; engine `runScenario` que executa os steps em ordem, propaga variáveis capturadas (jsonpath/regex via `jsonpath-plus`) e avalia asserts (`{source, op, value}` → `{pass, expected, actual}`) sobre status/headers/body; cada step do run registra request/response/headers + asserts (pass/fail) + variáveis capturadas; tool MCP `run_scenario`; web app renderiza asserts (verde/vermelho) e captures por step; loop multi-step provado por teste E2E. Reusa o envelope do M0 (RunStep estendido de forma aditiva/opcional — backward-compatible).
+
 ## [0.1.0] - 2026-06-18
 
 ### Added

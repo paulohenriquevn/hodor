@@ -27,9 +27,25 @@ export const CapturedResponseSchema = z.object({
   }),
 });
 
+/**
+ * Resultado de um assert sobre a resposta (M1). `pass` + esperado/obtido tornam
+ * a falha inspecionável (render M2/M3). Aditivo e OPCIONAL no RunStep (ADR D4).
+ */
+export const AssertResultSchema = z.object({
+  source: z.string(),
+  op: z.string(),
+  value: z.unknown().optional(),
+  pass: z.boolean(),
+  expected: z.unknown(),
+  actual: z.unknown(),
+});
+
 export const RunStepSchema = z.object({
   request: CapturedRequestSchema,
   response: CapturedResponseSchema,
+  // M1 (ADR D4): campos OPCIONAIS e aditivos — runs do M0 (sem eles) seguem válidos.
+  asserts: z.array(AssertResultSchema).optional(),
+  captures: z.record(z.unknown()).optional(),
 });
 
 export const RunEnvelopeSchema = z.object({
@@ -41,5 +57,6 @@ export const RunEnvelopeSchema = z.object({
 
 export type CapturedRequest = z.infer<typeof CapturedRequestSchema>;
 export type CapturedResponse = z.infer<typeof CapturedResponseSchema>;
+export type AssertResult = z.infer<typeof AssertResultSchema>;
 export type RunStep = z.infer<typeof RunStepSchema>;
 export type RunEnvelope = z.infer<typeof RunEnvelopeSchema>;

@@ -1,0 +1,123 @@
+agent: review-m1-scenario-model-wiring
+review_target: main..HEAD for plan m1-scenario-model
+plan: .claude/knowledge-base/plans/m1-scenario-model-plan.md
+date: 2026-06-18
+
+triad_revalidation:
+  total_new_public_exports: 13   # de src/core/index.ts (M1) + getScenarioRunCount (mcp)
+  # exports M1: ScenarioSchema, ScenarioStepSchema, AssertSpecSchema, CaptureSpecSchema,
+  #            loadScenario, runScenario, RunScenarioDeps, interpolate, interpolateRequest,
+  #            evalCapture, evalAssert  + getScenarioRunCount (mcp)
+  pillar_a_static_caller: "11 / 13"   # loadScenario + bare interpolate(public) sem caller de produção
+  pillar_b_integration_test: "13 / 13" # todo símbolo com caller é exercitado em integração/E2E
+  pillar_c_runtime_metric_observed: "1 / 1" # getScenarioRunCount exercitado no E2E real (não só unit)
+
+  # CHAIN DE PRODUÇÃO VERIFICADA (honesta, não gamed):
+  #   tool run_scenario (server.ts:84, caller real de produção)
+  #     -> runScenario (runScenario.ts:21)
+  #       -> interpolateRequest (runScenario.ts:29)  [interpolateRequest->interpolate bare interno]
+  #       -> executeRequest      (runScenario.ts:31, reuso M0)
+  #       -> evalAssert          (runScenario.ts:33)
+  #       -> evalCapture         (runScenario.ts:37)
+  #       -> buildRunEnvelope    (runScenario.ts:44, reuso M0)
+  #   ScenarioSchema -> inputSchema da tool (server.ts:79) — fronteira MCP valida o cenário
+  #   getScenarioRunCount -> incrementado em server.ts:86; observado no E2E real (scenario-e2e.test.ts:104)
+  # boundary (DIP): src/core NÃO importa mcp/web/local/cloud — CLEAN.
+  # render web itera step.asserts/step.captures (render.ts:93-94) — wired ao envelope.
+
+findings:
+  - id: F-wire-1
+    severity: MEDIUM
+    file: src/core/scenarioSchema.ts
+    line: 63
+    plan_ref: T1.1 (Tasks #3 "loadScenario(path)") + index.ts:29 export
+    summary: >-
+      loadScenario é um export público MORTO — zero caller de produção e zero teste.
+      Definido e re-exportado em src/core/index.ts:29, mas nenhum símbolo o invoca.
+    evidence: |
+      grep -rn "loadScenario" src --include="*.ts":
+        src/core/scenarioSchema.ts:63  (definição)
+        src/core/index.ts:29           (re-export público)
+      Nenhuma outra ocorrência. A tool MCP run_scenario recebe o cenário JSON
+      direto via ScenarioSchema.shape (server.ts:79) — o agente envia o JSON pelo
+      protocolo MCP; NÃO há fluxo de leitura-de-arquivo de cenário no M1. O caminho
+      "carregar cenário do disco" não existe em produção nem em teste.
+      Comparação: loadRun (M0) TEM caller (e2e/scenario-e2e usam loadRun para reler
+      o run persistido). loadScenario não tem o análogo.
+    recommended_action: >-
+      Escolher uma das duas: (a) remover loadScenario + seu export de index.ts (YAGNI —
+      M1 só executa cenário recebido via MCP, sem load-from-disk); OU (b) se há intenção
+      de M2 (YAML/UI/CLI lê cenário de arquivo), adicionar um teste unitário que exercite
+      loadScenario (round-trip parse de um cenário válido + rejeição de inválido) para
+      satisfazer pillar (b) e marcar a intenção. Sem uma das duas, é dead_public_export
+      (code-quality FAIL_HARD candidate na régua locked).
+
+  - id: F-wire-2
+    severity: LOW
+    file: src/core/index.ts
+    line: 36
+    plan_ref: T1.2 (interpolate) + D5 superfície do core
+    summary: >-
+      `interpolate` (bare) é re-exportado da API pública do core mas nenhum consumidor
+      externo (mcp/web) o usa — só `interpolateRequest` é necessário pela engine.
+      `interpolate` em si É wired internamente (chamado por interpolateRequest), portanto
+      NÃO é dead code de verdade — é apenas superfície pública excedente.
+    evidence: |
+      grep bare interpolate em src/mcp src/web (excl. interpolateRequest): nenhum consumidor.
+      Uso interno real: interpolate.ts:41,46,51 (dentro de interpolateRequest) — vivo.
+      Teste: interpolate.test.ts exercita interpolate diretamente (pillar b satisfeito p/ o símbolo).
+      Conclusão: não é orfão (tem caller interno + teste); é só export público sem consumidor
+      — distinto de loadScenario (que não tem NEM caller NEM teste).
+    recommended_action: >-
+      Opcional/cosmético: considerar não re-exportar `interpolate` bare de index.ts (manter
+      só interpolateRequest na superfície pública), mantendo interpolate como detalhe interno
+      do módulo. Não bloqueante — o símbolo é exercitado e tem caller interno.
+
+  - id: F-wire-3
+    severity: INFO
+    file: src/scenario-e2e.test.ts
+    line: 104
+    plan_ref: Global DoD — Runtime-metric proof (getScenarioRunCount > 0 no E2E)
+    summary: >-
+      Pillar (c) runtime metric HONESTO e exercitado em workload real (não só unit).
+      getScenarioRunCount é checado no E2E que sobe http.Server alvo real + roteia
+      POST/GET, chama a tool via InMemoryTransport, e verifica before+1.
+    evidence: |
+      scenario-e2e.test.ts:67  metricBefore = getScenarioRunCount()
+      scenario-e2e.test.ts:104 expect(getScenarioRunCount()).toBe(metricBefore + 1)
+      Incremento real em server.ts:86 (scenarioRunCount += 1) dentro do handler de produção.
+      E2E também prova propagação de captura (step2.url == base/posts/7, env.steps[0].captures == {id:7})
+      e asserts pass — chain ponta-a-ponta verdadeiro, não import-and-ignore.
+      Magnitude coerente: 1 run de cenário => count +1 (não suspeito).
+    recommended_action: Nenhuma — pillar (c) válido. Registrado como evidência positiva.
+
+  - id: F-wire-4
+    severity: INFO
+    file: src/core/runScenario.ts
+    line: 21
+    plan_ref: D5 (engine no core) + Coverage Matrix #2/#3
+    summary: >-
+      evalCapture / evalAssert / interpolateRequest são INTERNOS-mas-WIRED: não são
+      consumidos por mcp/web diretamente, mas têm caller de produção real via runScenario
+      (linhas 29/33/37) e são exercitados pela integração runScenario.test.ts + scenario.test.ts + E2E.
+      Não são dead exports.
+    evidence: |
+      runScenario.ts:29 interpolateRequest(step.request, variables)
+      runScenario.ts:33 (step.asserts ?? []).map(a => evalAssert(a, runStep.response))
+      runScenario.ts:37 captures[name] = evalCapture(spec, runStep.response)
+      runScenario tem caller de produção: server.ts:84 (tool run_scenario).
+      Boundary DIP CLEAN: src/core não importa mcp/web/local/cloud (grep vazio).
+    recommended_action: Nenhuma — triad honesto para a engine. Evidência positiva.
+
+verdict_input:
+  blocker_count: 0
+  high_count: 0
+  medium_count: 1   # F-wire-1 loadScenario dead export
+  low_count: 1
+  info_count: 2
+  note: >-
+    A engine de cenário está GENUINAMENTE integrada ao fluxo E2E real via a tool MCP
+    run_scenario (não é módulo órfão). O único defeito de wiring é loadScenario:
+    export público sem caller nem teste (dead_public_export). Pela code-quality-golden-rule
+    locked, dead_public_export é FAIL_HARD — recomendo escalar F-wire-1 para o chief-reviewer
+    decidir remover (YAGNI) vs cobrir com teste antes de READY_TO_MERGE.

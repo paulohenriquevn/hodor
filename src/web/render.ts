@@ -1,4 +1,10 @@
-import type { RunEnvelope, RunStep, CapturedRequest, CapturedResponse } from "../core/index.js";
+import type {
+  RunEnvelope,
+  RunStep,
+  CapturedRequest,
+  CapturedResponse,
+  AssertResult,
+} from "../core/index.js";
 
 /**
  * Render puro (ADR D2): RunEnvelope → HTML. Sem I/O. Itera `steps` (suporta N — D3).
@@ -49,11 +55,43 @@ function responseSection(res: CapturedResponse): string {
     ${bodyBlock(res.body, res.headers["content-type"])}`;
 }
 
+function assertsTable(asserts: AssertResult[]): string {
+  if (asserts.length === 0) return "";
+  const rows = asserts
+    .map(
+      (a) =>
+        `<tr class='${a.pass ? "pass" : "fail"}'>
+        <td>${a.pass ? "✓ PASS" : "✗ FAIL"}</td>
+        <td>${escapeHtml(a.source)}</td>
+        <td>${escapeHtml(a.op)}</td>
+        <td>${escapeHtml(String(a.expected ?? ""))}</td>
+        <td>${escapeHtml(String(a.actual ?? ""))}</td>
+      </tr>`,
+    )
+    .join("");
+  return `
+    <h3>Asserts</h3>
+    <table class='asserts'><thead><tr><th>Result</th><th>Source</th><th>Op</th><th>Expected</th><th>Actual</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function capturesList(captures: Record<string, unknown>): string {
+  const entries = Object.entries(captures);
+  if (entries.length === 0) return "";
+  const items = entries
+    .map(([k, v]) => `<li><code>${escapeHtml(k)}</code> = ${escapeHtml(String(v))}</li>`)
+    .join("");
+  return `
+    <h3>Captures</h3>
+    <ul class='captures'>${items}</ul>`;
+}
+
 function stepSection(step: RunStep, index: number): string {
   return `<section class='step'>
     <h2>Step ${index + 1}</h2>
     ${requestSection(step.request)}
     ${responseSection(step.response)}
+    ${step.asserts && step.asserts.length > 0 ? assertsTable(step.asserts) : ""}
+    ${step.captures && Object.keys(step.captures).length > 0 ? capturesList(step.captures) : ""}
   </section>`;
 }
 
@@ -79,6 +117,12 @@ export function renderRun(env: RunEnvelope): string {
     table.headers td, table.headers th { border: 1px solid #e0e0e0; padding: 2px 8px; text-align: left; }
     pre.body { background: #f6f8fa; padding: .75rem; border-radius: 6px; overflow-x: auto; font-size: .8rem; }
     .muted { color: #888; font-size: .8rem; }
+    table.asserts { border-collapse: collapse; font-size: .8rem; margin: .5rem 0; }
+    table.asserts td, table.asserts th { border: 1px solid #e0e0e0; padding: 2px 8px; text-align: left; }
+    table.asserts tr.pass td:first-child { color: #137333; font-weight: 700; }
+    table.asserts tr.fail td:first-child { color: #b00020; font-weight: 700; }
+    table.asserts tr.fail { background: #fdecef; }
+    ul.captures { font-size: .8rem; margin: .25rem 0; }
   </style>
 </head>
 <body>

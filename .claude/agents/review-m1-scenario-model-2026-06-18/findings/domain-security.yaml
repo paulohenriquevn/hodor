@@ -1,0 +1,197 @@
+agent: review-m1-scenario-model-domain-security
+review_target: main..HEAD for plan m1-scenario-model
+domain: security
+domain_specific_patterns_checked:
+  - "jsonpath-plus restrito a path queries (sem eval/script) — CVE RCE <10.0.0 mitigada"
+  - "interpolacao ${{ }} em URL/header/body — injection surface"
+  - "CRLF / header injection via valor capturado interpolado em header"
+  - "ReDoS via regex de captura/assert vindo do cenario (input do agente)"
+  - "jsonpath/JSON.parse sobre body sem limite de tamanho"
+  - "validacao na fronteira (ScenarioSchema na tool MCP)"
+
+summary: |
+  Avaliacao honesta para o contexto-alvo do M1: ferramenta LOCAL, single-user,
+  stdio MCP, em que tanto o cenario quanto a API-alvo sao controlados pelo
+  proprio operador/agente. NAO ha boundary de confianca entre usuarios; a
+  "superficie de ataque" e essencialmente o operador contra si mesmo OU uma
+  API-alvo de terceiros respondendo dados maliciosos que sao recapturados.
+  Sob essa lente, os achados de seguranca sao majoritariamente LOW/INFO com UM
+  MEDIUM defensivo (ReDoS). NENHUM BLOCKER, NENHUM HIGH.
+
+  Confirmacoes positivas (gates do prompt):
+  1. jsonpath-plus@10.4.0 pinned (^10.4.0) no package.json E no lockfile;
+     usado SO via JSONPath({ path, json, wrap: true }) em evalCapture.ts:16 e
+     evalAssert.ts:36. NENHUM uso de eval/script/sandbox/resultType:"eval"/
+     new Function em todo src/ (grep limpo). A CVE de RCE historica
+     (CVE-2024-21534, <10.0.0) esta MITIGADA: versao >=10.0.0 + sem modo eval.
+  2. URL: interpolateRequest aplica encodeURIComponent em TODO valor interpolado
+     na URL (interpolate.ts:35-42) — EC-3 implementado corretamente.
+  3. CRLF em header: o valor interpolado em header NAO e encodeURIComponent
+     (interpolate.ts:43-49), mas o runtime (Node 22 / undici Headers) REJEITA
+     CR/LF em header value com TypeError (verificado empiricamente). Logo o
+     split de header e impossivel na pratica — vira RequestExecutionError.
+
+findings:
+  - id: F-sec-1
+    severity: MEDIUM
+    file: src/core/evalCapture.ts
+    line: 24
+    plan_ref: "Drawbacks & Risks — nenhuma linha cobre ReDoS de regex do cenario"
+    domain_anchor: "Unbreakable Rule 8 (fail-fast) + rules/architecture.md §2 (validacao na fronteira)"
+    summary: >-
+      ReDoS: `new RegExp(spec.regex)` compila um regex fornecido pelo CENARIO
+      (input do agente) e o executa contra o body da resposta sem timeout nem
+      limite. Um regex catastrofico (ex. `(a+)+$`) sobre um body suficientemente
+      grande/adversarial bloqueia o event-loop indefinidamente — a engine inteira
+      trava (DoS), pois nao ha AbortController cobrindo a avaliacao de regex (so
+      cobre o fetch). Mesma classe em evalAssert.ts:56 (`op:"matches"` →
+      `new RegExp(String(expected)).test(String(actual))`).
+    evidence: |
+      ```ts
+      // evalCapture.ts:23-26
+      if (spec.regex !== undefined && value !== null && value !== undefined) {
+        const m = new RegExp(spec.regex).exec(String(value));  // sem timeout
+        value = m ? (m[1] ?? m[0]) : null;
+      }
+      ```
+      ```ts
+      // evalAssert.ts:55-56
+      case "matches":
+        return new RegExp(String(expected)).test(String(actual));  // sem timeout
+      ```
+      O timeout do M0 (executeRequest AbortController) cobre SO a chamada de rede,
+      nao a fase de captura/assert (sincrona, pos-resposta).
+    recommended_action: >-
+      Honestamente MEDIUM (nao HIGH) para uso local single-user: o "atacante" e o
+      proprio autor do cenario, que so se prejudica. Mitigacao barata e suficiente
+      no M1: (a) documentar no plano (Drawbacks) que regex do cenario e confiavel-
+      por-convencao no contexto local; OU (b) cap defensivo de tamanho do input do
+      regex (`String(value).length`) antes do exec. NAO recomendo trazer engine de
+      regex linear (re2) agora (YAGNI para M1). Registrar como follow-up se M-futuro
+      expuser a tool a cenarios de terceiros.
+
+  - id: F-sec-2
+    severity: LOW
+    file: src/core/interpolate.ts
+    line: 43
+    plan_ref: "Drawback 'Interpolacao de ${{var}} em URL pode injetar caracteres invalidos' (so cobre URL, nao header)"
+    domain_anchor: "Defense-in-depth — Unbreakable Rule 8"
+    summary: >-
+      Valor capturado interpolado em HEADER nao e sanitizado por codigo proprio.
+      Hoje a protecao contra CRLF/header-splitting e 100% terceirizada ao undici
+      (Headers rejeita \r\n com TypeError — verificado). Isso e ACEITAVEL, mas e
+      uma dependencia implicita nao documentada: se um caller futuro construir
+      headers por um caminho que nao passe pela validacao do `Headers` (ex. um
+      transporte HTTP alternativo, ou montagem manual de raw request), a protecao
+      desaparece silenciosamente. Tambem: quando o valor tem \r\n, o erro vira
+      `RequestExecutionError` generico ("request failed") — diagnostico opaco
+      (o operador nao sabe que foi CRLF no header).
+    evidence: |
+      ```ts
+      // interpolate.ts:43-49 — header NAO recebe encodeURIComponent (so a URL recebe)
+      if (request.headers) {
+        const headers: Record<string, string> = {};
+        for (const [k, v] of Object.entries(request.headers)) {
+          headers[k] = interpolate(v, variables);   // valor cru
+        }
+        result.headers = headers;
+      }
+      ```
+      Verificacao empirica (Node 22):
+      `new Headers().set("X-Test","a\r\nEvil: x")` → TypeError "invalid header value".
+      Logo split impossivel no caminho atual; vira RequestExecutionError em executeRequest.ts:53-55.
+    recommended_action: >-
+      LOW — o runtime ja barra o split; nenhuma vulnerabilidade explorAvel no caminho
+      atual. Para defense-in-depth + diagnostico melhor: rejeitar explicitamente
+      \r ou \n no valor interpolado de header com um ScenarioError tipado
+      ("header value contains CR/LF: <name>") ANTES de chamar fetch. Custo ~3 linhas,
+      transforma um erro opaco num erro de cenario claro e remove a dependencia
+      implicita da validacao do undici. Opcional no M1; registrar no plano se nao feito.
+
+  - id: F-sec-3
+    severity: LOW
+    file: src/core/evalCapture.ts
+    line: 15
+    plan_ref: "Failure scenarios — body nao-JSON tratado; body ENORME nao tratado"
+    domain_anchor: "rules/architecture.md §2 — fronteira; Unbreakable Rule 8"
+    summary: >-
+      `JSON.parse(response.body)` + JSONPath rodam sobre o body COMPLETO da resposta,
+      sem limite de tamanho. Uma API-alvo respondendo um body multi-GB (ou um
+      chunked sem fim, ja limitado pelo timeout do fetch) e parseado inteiro em
+      memoria, com risco de OOM / pausa de GC. evalAssert.ts:35 tem o mesmo padrao
+      para source `jsonpath:`. executeRequest.ts:61 ja le `response.text()` inteiro
+      (origem do body em memoria — herdado do M0).
+    evidence: |
+      ```ts
+      // evalCapture.ts:15-16
+      const json = JSON.parse(response.body) as ...;   // body inteiro, sem cap
+      const matches = JSONPath({ path: spec.jsonpath, json, wrap: true });
+      ```
+    recommended_action: >-
+      LOW para M1 local (o operador controla a API-alvo ou aceita o risco; o timeout
+      do fetch ja limita streams infinitos). A origem (body inteiro em memoria) e do
+      M0 (executeRequest), fora do escopo de mudanca do M1. Recomendo apenas registrar
+      como risco conhecido herdado; um cap de tamanho de body e candidato a um
+      M-futuro de hardening, nao bloqueia o M1.
+
+  - id: F-sec-4
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 79
+    plan_ref: "ADR D1 — ScenarioSchema valida o cenario na fronteira MCP"
+    domain_anchor: "rules/architecture.md §2 — validar inputs na fronteira"
+    summary: >-
+      POSITIVO (nao e defeito): validacao na fronteira esta correta. A tool
+      `run_scenario` declara `inputSchema: ScenarioSchema.shape`, entao o cenario e
+      validado por zod pelo SDK MCP ANTES de chegar a engine (steps>=1, op no enum,
+      capture exige jsonpath|regex via .refine). loadScenario tambem valida no disco
+      (scenarioSchema.ts:63-66). O core nunca confia em entrada nao validada.
+    evidence: |
+      ```ts
+      // server.ts:73-81
+      server.registerTool("run_scenario", {
+        inputSchema: ScenarioSchema.shape,   // valida na fronteira MCP
+        outputSchema: RunEnvelopeSchema.shape,
+      }, async (scenario) => { const env = await runScenario(scenario); ... });
+      ```
+    recommended_action: "Nenhuma. Confirma boundary validation correta — registrado como evidencia positiva."
+
+  - id: F-sec-5
+    severity: INFO
+    file: src/core/evalCapture.ts
+    line: 16
+    plan_ref: "ADR D2 / Drawback jsonpath-plus RCE; deps-audit nota historica"
+    domain_anchor: "Unbreakable Rule 9 — usar lib madura, sem reinventar; OSV CLEAN"
+    summary: >-
+      POSITIVO: confirmacao do gate principal de seguranca do M1. jsonpath-plus
+      pinned em ^10.4.0 (package.json:20 e package-lock.json → 10.4.0 resolvido).
+      Usado EXCLUSIVAMENTE como path-query: `JSONPath({ path, json, wrap: true })`
+      nos dois unicos call-sites (evalCapture.ts:16, evalAssert.ts:36). grep em src/
+      por eval|sandbox|resultType|new Function|script: ZERO hits em codigo de
+      producao. A CVE de RCE historica (<10.0.0, avaliacao de script) esta
+      mitigada por versao + ausencia total do modo eval.
+    evidence: |
+      ```
+      package.json:20      "jsonpath-plus": "^10.4.0"
+      package-lock.json    jsonpath-plus-10.4.0.tgz (resolvido)
+      evalCapture.ts:16    JSONPath({ path: spec.jsonpath, json, wrap: true })
+      evalAssert.ts:36     JSONPath({ path, json, wrap: true })
+      grep eval|script|sandbox|resultType|new Function em src/ (prod) → 0
+      ```
+    recommended_action: "Nenhuma. Gate de seguranca jsonpath-plus satisfeito — registrado como evidencia positiva."
+
+verdict_contribution:
+  blocker_count: 0
+  high_count: 0
+  medium_count: 1
+  low_count: 3
+  info_count: 2
+  domain_recommendation: >-
+    READY_TO_MERGE do ponto de vista de SEGURANCA para o escopo M1 (ferramenta
+    LOCAL single-user). Gates do prompt confirmados: jsonpath-plus sem eval +
+    pinned + OSV clean; URL com encodeURIComponent; CRLF em header barrado pelo
+    runtime; validacao na fronteira presente. O unico MEDIUM (ReDoS, F-sec-1)
+    NAO e blocker no contexto local — recomendo absorver como nota no plano
+    (Drawbacks) ou um cap de tamanho de ~3 linhas, e registrar F-sec-1/F-sec-2/
+    F-sec-3 como follow-ups de hardening para qualquer milestone que exponha a
+    tool a cenarios de terceiros (boundary multi-tenant).
