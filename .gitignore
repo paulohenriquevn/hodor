@@ -22,6 +22,9 @@ npm-debug.log*
 # Kept locally for citation-existence checks; not versioned in this repo.
 .claude/knowledge-base/references/*/
 
+# Run artifacts produced by run_request (not versioned in M0)
+runs/
+
 # Ralph-loop local state (per-machine)
 ralph-loop.local.md
 .compaction-snapshots/

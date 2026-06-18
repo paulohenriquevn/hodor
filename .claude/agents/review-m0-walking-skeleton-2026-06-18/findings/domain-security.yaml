@@ -1,0 +1,231 @@
+agent: review-m0-walking-skeleton-domain-security
+review_target: main..HEAD for plan m0-walking-skeleton
+domain: security
+domain_specific_patterns_checked:
+  - "path-traversal allowlist on GET /runs/:id (RUN_ID_RE)"
+  - "XSS — every dynamic ${...} in render.ts escaped via escapeHtml"
+  - "SSRF — documented/accepted risk (EC-4)"
+  - "file-write path injection in persistRun (runId provenance)"
+  - "info leak in 500 error responses"
+  - "header injection / response splitting"
+  - "set-cookie multi-value capture"
+  - "prototype pollution via z.record header maps"
+
+summary_counts:
+  BLOCKER: 0
+  HIGH: 0
+  MEDIUM: 1
+  LOW: 3
+  INFO: 2
+
+findings:
+  # ----------------------------------------------------------------------------
+  # (1) PATH TRAVERSAL — GET /runs/:id  → VERIFIED SAFE
+  # ----------------------------------------------------------------------------
+  - id: F-sec-1
+    severity: INFO
+    file: src/web/server.ts
+    line: 15
+    plan_ref: EC-1 (MUST FIX, absorbed into plan v1.1) — path traversal in GET /runs/:id
+    domain_anchor: architecture.md §2 — validar inputs nas fronteiras do sistema
+    summary: >-
+      Path-traversal mitigation is CORRECT and sufficient. RUN_ID_RE = /^[0-9a-f-]{36}$/i
+      is a strict allowlist (only hex digits and hyphen). Verified empirically: every
+      traversal payload from EC-1 fails the test BEFORE join() is reached.
+    evidence: |
+      Tested against RUN_ID_RE (node):
+        "../../package.json"          => false
+        "..%2f..%2fetc%2fpasswd"      => false   (% not in charset)
+        "....//....//etc/passwd"      => false
+        null byte / unicode           => false   (outside [0-9a-f-])
+      The two strings that DO match the regex ("36 dashes", "36 hex no dashes")
+      contain no path separator, so join(dir, `${id}.json`) stays inside `dir`
+      and resolves to a non-existent file → 404. Validation runs at server.ts:75
+      (handle) BEFORE join() at line 79. Node's http layer also rejects raw
+      control chars in the request target upstream. No escape exists.
+    recommended_action: >-
+      No action. Allowlist (not denylist) is the right design. Optional hardening
+      for a later milestone: tighten RE to the canonical UUID v4 shape
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i to
+      reject the all-dashes / no-dash classes that currently pass but only 404.
+
+  # ----------------------------------------------------------------------------
+  # (2) XSS in render.ts  → VERIFIED: every dynamic value escaped
+  # ----------------------------------------------------------------------------
+  - id: F-sec-2
+    severity: INFO
+    file: src/web/render.ts
+    line: 11
+    plan_ref: T3.1/T3.2 — render puro RunEnvelope→HTML, "todo conteúdo dinâmico é escapado (anti-XSS)"
+    domain_anchor: OWASP A03 Injection (XSS) — output encoding at the sink
+    summary: >-
+      XSS escaping is COMPLETE for every string-typed dynamic value. Enumerated all
+      14 ${...} interpolations in render.ts; every user/target-controlled STRING
+      (runId, createdAt, req.method, req.url, statusText, header keys+values, body,
+      contentType) passes through escapeHtml. Remaining interpolations are either
+      numeric (Zod-validated) or already-escaped sub-fragments.
+    evidence: |
+      Escaped string sinks: l21 (header k,v), l30 (contentType), l32 (body),
+        l38 (method,url), l46 (statusText), l66+l85 (runId), l86 (createdAt).
+      Numeric (no escape needed — Zod-typed at loadRun boundary):
+        l46 ${res.status} (z.number), Math.floor(res.status/100) (l46),
+        l86 ${env.schemaVersion} (z.literal(1)), ${env.steps.length},
+        l47 durationMs.toFixed(1) (z.number), l54 ${index+1}.
+      Composition-only (escaped fragments): l24, l39, l40, l48, l55, l56, l87.
+      No dynamic value is interpolated into an HTML *attribute* context, so the
+      fact that escapeHtml omits the single-quote (') entity is NOT exploitable
+      here (all attributes use static single-quoted values).
+    recommended_action: >-
+      No action for M0. Defense-in-depth note for a later milestone: if any future
+      template puts a dynamic value inside a single-quoted attribute, escapeHtml
+      must also encode `'` (&#39;) and `/`. Consider adding a CSP header
+      (default-src 'none') on the HTML response as cheap belt-and-suspenders.
+
+  # ----------------------------------------------------------------------------
+  # (3) SSRF  → documented & accepted
+  # ----------------------------------------------------------------------------
+  - id: F-sec-3
+    severity: INFO
+    file: src/core/executeRequest.ts
+    line: 47
+    plan_ref: EC-4 (DOCUMENT) + plan §Drawbacks&Risks row [EC-4] SSRF Medium, accepted
+    domain_anchor: OWASP A10 SSRF
+    summary: >-
+      SSRF is inherent to the product (run_request fetches arbitrary URLs — that IS
+      the feature). Correctly documented and accepted for M0 under the ROADMAP
+      single-user/local constraint; egress controls are declared post-V1 scope.
+    evidence: |
+      fetch(url, ...) at executeRequest.ts:47 takes the caller URL verbatim.
+      Plan §Drawbacks&Risks line 146: "[EC-4] SSRF ... Risco aceito no M0".
+      The acceptance is explicit, scoped (local single-user), and tied to a
+      ROADMAP out-of-scope declaration — meets the EC-4 "DOCUMENT not block" bar.
+    recommended_action: >-
+      No action. Re-evaluate when M-? introduces multi-user/hosted mode: at that
+      point url scheme allowlist (block file://, gopher://) + private-IP/metadata
+      (169.254.169.254) egress deny becomes a hard requirement, not accepted risk.
+
+  # ----------------------------------------------------------------------------
+  # (4) File-write path injection in persistRun → VERIFIED SAFE
+  # ----------------------------------------------------------------------------
+  - id: F-sec-4
+    severity: INFO
+    file: src/core/runStore.ts
+    line: 37
+    plan_ref: T1.3 — persistRun grava ${dir}/${runId}.json
+    domain_anchor: architecture.md §2 — trusted data after boundary
+    summary: >-
+      No path-injection on write. runId is produced by crypto.randomUUID
+      (buildRunEnvelope, runStore.ts:27) — not user-controlled — so join(dir,
+      `${runId}.json`) cannot escape `dir`. The MCP tool input never sets runId.
+    evidence: |
+      runStore.ts:24-31 buildRunEnvelope sets runId: newId() where newId default
+      = randomUUID. persistRun (l35-40) uses env.runId only. The only injectable
+      surface is `dir`, which comes from HODOR_RUNS_DIR (operator-controlled env,
+      trusted) — not from request input.
+    recommended_action: No action.
+
+  # ----------------------------------------------------------------------------
+  # (5) Info leak in 500 responses
+  # ----------------------------------------------------------------------------
+  - id: F-sec-5
+    severity: LOW
+    file: src/web/server.ts
+    line: 47
+    plan_ref: Rule 8 (fail-loud) — server.ts comment "500 com motivo curto"
+    domain_anchor: OWASP A09/Improper error handling — verbose error to client
+    summary: >-
+      The 500 handler reflects err.message verbatim to the HTTP client. For a
+      corrupt/invalid run file, loadRun throws a ZodError whose message enumerates
+      the full schema validation path (field names, expected types), leaking the
+      internal RunEnvelope schema shape to whoever can hit the endpoint.
+    evidence: |
+      server.ts:46-47:
+        res.writeHead(500, { "content-type": "text/plain" });
+        res.end(`internal error: ${err instanceof Error ? err.message : "unknown"}`);
+      loadRun (runStore.ts:48) does RunEnvelopeSchema.parse(JSON.parse(raw)); a
+      malformed file surfaces a multi-line ZodError describing expected schema.
+    recommended_action: >-
+      Return a generic body ("internal error") to the client and log the detailed
+      err.message to stderr instead. LOW severity given the M0 local single-user
+      constraint, but it is a free fix and aligns with fail-loud-to-LOGS, not to
+      the response body.
+
+  # ----------------------------------------------------------------------------
+  # (6) Header injection / response splitting
+  # ----------------------------------------------------------------------------
+  - id: F-sec-6
+    severity: INFO
+    file: src/web/server.ts
+    line: 41
+    plan_ref: T3.2 — web server response headers
+    domain_anchor: OWASP — CRLF/header injection / response splitting
+    summary: >-
+      No header-injection vector on the web server response. The only dynamic
+      response header is `location: /runs/${id}` (302), and `id` there comes from
+      latestRunId() (a filename on disk, derived from randomUUID), not from request
+      input. Node's http.writeHead also rejects CRLF in header values.
+    evidence: |
+      server.ts:38-41 builds headers {content-type, location}. location is set only
+      on the "/" redirect (handle l69) using id from latestRunId(dir) — disk-derived,
+      not client input. /runs/:id path never echoes the id into a response header.
+    recommended_action: No action.
+
+  # ----------------------------------------------------------------------------
+  # (7) set-cookie multi-value capture (response headers from TARGET)
+  # ----------------------------------------------------------------------------
+  - id: F-sec-7
+    severity: LOW
+    file: src/core/executeRequest.ts
+    line: 88
+    plan_ref: EC-3 (SHOULD TEST) — repeated Set-Cookie collapse
+    domain_anchor: header fidelity for a request-inspection product
+    summary: >-
+      captureHeaders joins multiple Set-Cookie values with ", " (comma-space). This
+      is a known lossy join, but for SECURITY it is benign: the values are only
+      ever displayed (escaped) in the review HTML — they are never replayed, set as
+      cookies, or parsed. Note: comma-joining Set-Cookie is itself non-reversible
+      (cookie Expires=...,DD also contains commas), so a future replay feature MUST
+      switch to an array, not rely on this string.
+    evidence: |
+      executeRequest.ts:84-90 record["set-cookie"] = setCookies.join(", ").
+      runSchema headers: z.record(z.string()) — a flat string map, so multi-value
+      headers cannot be represented faithfully. Render only displays them (render.ts
+      l21, escaped). No security impact at M0; correctness/fidelity caveat only.
+    recommended_action: >-
+      Acceptable for M0 (display-only). Flag for the schema-evolution milestone:
+      headers should become Record<string,string[]> before any cookie/auth replay
+      feature is built, or the join becomes a silent data-corruption bug.
+
+  # ----------------------------------------------------------------------------
+  # (8) Prototype pollution via header Record maps
+  # ----------------------------------------------------------------------------
+  - id: F-sec-8
+    severity: LOW
+    file: src/core/runSchema.ts
+    line: 15
+    plan_ref: T1.1 — CapturedRequest/Response headers: z.record(z.string())
+    domain_anchor: CWE-1321 prototype pollution via untrusted object keys
+    summary: >-
+      Header maps are built/parsed as plain objects via Object.fromEntries
+      (executeRequest.ts:85) and z.record (runSchema.ts:15) and JSON.parse
+      (runStore.ts:48). A target server returning a header literally named
+      "__proto__" would land a "__proto__" own-property — not exploitable in M0
+      (the maps are only iterated with Object.entries and rendered, never spread
+      into a prototype-sensitive target), but worth noting since header keys are
+      attacker-influenced (the target API controls response header names).
+    evidence: |
+      executeRequest.ts:85 Object.fromEntries(headers) — header names come from the
+      remote target's response. render.ts:19-21 reads them via Object.entries (safe).
+      No __proto__/constructor key filtering anywhere; relies on the fact that the
+      map is never merged into Object.prototype-reachable state.
+    recommended_action: >-
+      No action for M0 (no sink). If headers ever feed into option-merge / template
+      lookups, filter __proto__/constructor/prototype keys. Low and defensive.
+
+verdict_note: >-
+  No BLOCKER and no HIGH findings. The two headline security concerns (path
+  traversal EC-1, XSS) were each verified SAFE by enumeration/empirical test —
+  the allowlist regex and complete escapeHtml coverage hold. SSRF is correctly
+  documented/accepted. Residual issues are LOW (500 info-leak to client body,
+  Set-Cookie lossy join, defensive __proto__ note) and do not block merge for an
+  M0 local single-user walking skeleton.

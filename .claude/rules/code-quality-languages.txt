@@ -10,9 +10,11 @@
 #
 # Supported identifiers (uncomment the ones your project uses):
 #
+# Format: LANGUAGE | MANIFEST-MARKER | STATUS | NOTES   (STATUS ∈ ENABLED/DISABLED/DEFER)
+typescript | package.json | ENABLED | M0 walking skeleton (TS/Node ESM)
 # go
 # python
-# typescript
+# (identifier-only lines are NOT valid — the parser requires the pipe-delimited form above)
 # javascript
 # rust
 # java

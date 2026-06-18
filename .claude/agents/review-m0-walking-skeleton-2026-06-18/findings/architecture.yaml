@@ -1,0 +1,304 @@
+agent: review-m0-walking-skeleton-architecture
+review_target: main..HEAD for plan m0-walking-skeleton (main empty — full src/ reviewed)
+plan: .claude/knowledge-base/plans/m0-walking-skeleton-plan.md
+rules_read:
+  - .claude/rules/architecture.md
+  - .claude/knowledge-base/plans/m0-walking-skeleton-plan.md (ADRs D1-D5)
+boundary_verification:
+  core_imports_mcp_web_sdk: false   # grep -rn "mcp|web|modelcontextprotocol" src/core/ → only a comment string in index.ts, no import
+  cross_adapter_imports: false      # no src/mcp <-> src/web imports
+  adapters_import_only_core_index: true   # mcp+web import from ../core/index.js exactly
+  circular_dependencies: false
+  any_usage: false
+  console_log_in_prod: false        # only console.error (stderr) per D5
+summary_counts:
+  BLOCKER: 0
+  HIGH: 0
+  MEDIUM: 1
+  LOW: 2
+  INFO: 6
+
+findings:
+  # ---------------- src/core/index.ts ----------------
+  - id: F-arch-1
+    severity: INFO
+    file: src/core/index.ts
+    line: 1
+    plan_ref: ADR D2 (fronteira DIP), Baseline § Architecture boundaries affected
+    summary: Public core surface is re-export only; DIP boundary correctly enforced.
+    evidence: |
+      ```ts
+      // index.ts re-exports only; no logic. Adapters import EXCLUSIVELY from here.
+      export { executeRequest, ... } from "./executeRequest.js";
+      export { buildRunEnvelope, persistRun, loadRun, defaultRunsDir, ... } from "./runStore.js";
+      ```
+      grep "mcp|web|modelcontextprotocol" src/core/ returns ONLY the doc comment on line 4
+      (a string, not an import). D2 boundary is clean: core → nothing outward.
+    recommended_action: No action — exemplary DIP boundary.
+
+  # ---------------- src/core/runSchema.ts ----------------
+  - id: F-arch-2
+    severity: INFO
+    file: src/core/runSchema.ts
+    line: 35
+    plan_ref: T1.1, ADR D3 (envelope N-step)
+    summary: Schema is the single source of truth for the run shape; N-step envelope present from M0 as designed.
+    evidence: |
+      ```ts
+      export const RunEnvelopeSchema = z.object({
+        schemaVersion: z.literal(1),
+        runId: z.string().min(1),
+        createdAt: z.string(),
+        steps: z.array(RunStepSchema).min(1),
+      });
+      ```
+      Single authoritative definition consumed by executeRequest, runStore, mcp, web.
+      No duplicated shape knowledge (DRY honored). schemaVersion literal + steps[].min(1)
+      match plan invariants exactly.
+    recommended_action: No action.
+
+  # ---------------- src/core/executeRequest.ts ----------------
+  - id: F-arch-3
+    severity: MEDIUM
+    file: src/core/executeRequest.ts
+    line: 60
+    plan_ref: T1.2 Pseudo-code, ADR D4
+    summary: durationMs measured with performance.now() while startedAt uses injected now() — the two clocks are not the same source, so timings are internally inconsistent under an injected clock.
+    evidence: |
+      ```ts
+      const startedAt = new Date(now()).toISOString();   // injectable clock (Date.now default)
+      const t0 = performance.now();                        // monotonic clock, NOT injectable
+      ...
+      const durationMs = Math.max(0, performance.now() - t0);
+      ```
+      The plan's D4 rationale is "injeção de clock/RNG = testing.md §6 (determinismo)".
+      `startedAt` is deterministic under an injected `now`, but `durationMs` is taken from
+      `performance.now()` which has no injection seam. A test that injects `now` to pin
+      `startedAt` still gets a non-deterministic `durationMs`. Functionally fine for M0
+      (schema only asserts durationMs >= 0), but the determinism contract is half-applied:
+      the abstraction promises an injectable clock yet a clock-derived field escapes it.
+    recommended_action: |
+      Either (a) document that durationMs is intentionally wall-clock-real and excluded from
+      the determinism seam (add a one-line comment near t0), or (b) accept an optional
+      `monotonic?: () => number` in ExecuteOptions defaulting to performance.now so the
+      duration is also injectable. (b) keeps SRP/testability consistent; (a) is the KISS
+      choice for M0. Pick one and make the intent explicit — currently it is implicit.
+
+  - id: F-arch-4
+    severity: INFO
+    file: src/core/executeRequest.ts
+    line: 84
+    plan_ref: T1.2 EC-3 (repeated headers), ADR D4
+    summary: captureHeaders correctly isolates the Set-Cookie repeated-header concern in a private helper (SRP); no leakage of fetch types across the core boundary.
+    evidence: |
+      ```ts
+      function captureHeaders(headers: Headers): Record<string, string> {
+        const record = Object.fromEntries(headers) as Record<string, string>;
+        const setCookies = headers.getSetCookie?.();
+        if (setCookies && setCookies.length > 0) record["set-cookie"] = setCookies.join(", ");
+        return record;
+      }
+      ```
+      Returns a plain Record<string,string> — the Web `Headers` type never escapes the core
+      public API (no leaky abstraction, architecture.md §6). EC-3 handled at the right layer.
+    recommended_action: No action.
+
+  # ---------------- src/core/runStore.ts ----------------
+  - id: F-arch-5
+    severity: LOW
+    file: src/core/runStore.ts
+    line: 14
+    plan_ref: T1.3, Q1 (HODOR_RUNS_DIR), architecture.md §2 (no global env reads in domain)
+    summary: defaultRunsDir() reads process.env directly inside the domain layer — a borderline service-locator / ambient-dependency pattern that architecture.md §2 flags as an anti-pattern.
+    evidence: |
+      ```ts
+      export function defaultRunsDir(): string {
+        return process.env.HODOR_RUNS_DIR ?? "runs";
+      }
+      ```
+      architecture.md §2 lists "Service locator / global singletons resolving dependencies
+      at runtime instead of constructor injection" as an anti-pattern. Reading the runs
+      directory from a global env var inside the pure core couples the domain to an ambient
+      configuration source. It is mitigated: `persistRun(env, dir?)` accepts an explicit dir
+      arg (callers can inject), and the default is only the fallback. Severity is LOW because
+      the injection seam exists; the env read is just the default. The web adapter and tests
+      override it via the dir argument / HODOR_RUNS_DIR.
+    recommended_action: |
+      Acceptable for M0 given the explicit-dir override exists. To fully satisfy §2, the env
+      resolution could move to the composition root (mcp main() / web main()) and be passed
+      down, leaving the core fully ambient-free. Track as a small follow-up; not blocking.
+
+  - id: F-arch-6
+    severity: INFO
+    file: src/core/runStore.ts
+    line: 46
+    plan_ref: T1.3, architecture.md §2 (validate at boundary)
+    summary: loadRun validates with zod at the read boundary (fail-loud); persist/load round-trip is the single I/O port for runs as D2 intends.
+    evidence: |
+      ```ts
+      export async function loadRun(path: string): Promise<RunEnvelope> {
+        const raw = await readFile(path, "utf8");
+        return RunEnvelopeSchema.parse(JSON.parse(raw));   // boundary validation, throws ZodError
+      }
+      ```
+      Input validation at the trust boundary (architecture.md §2 / Rule 8). buildRunEnvelope
+      key order is fixed and clock/id are injected (deterministic) — clean SRP.
+    recommended_action: No action.
+
+  # ---------------- src/core/errors.ts ----------------
+  - id: F-arch-7
+    severity: INFO
+    file: src/core/errors.ts
+    line: 8
+    plan_ref: T1.2, Unbreakable Rule 8 (typed domain errors)
+    summary: RequestExecutionError is a typed domain error preserving cause; lives in the domain layer where it belongs.
+    evidence: |
+      ```ts
+      export class RequestExecutionError extends Error {
+        override readonly name = "RequestExecutionError";
+        constructor(message: string, options?: { cause?: unknown }) { super(message, options); }
+      }
+      ```
+      Typed, named, carries cause — fail-fast/fail-clear (Rule 8). No anaemic generic Error.
+    recommended_action: No action.
+
+  # ---------------- src/mcp/server.ts ----------------
+  - id: F-arch-8
+    severity: LOW
+    file: src/mcp/server.ts
+    line: 13
+    plan_ref: ADR D5 (runtime metric), wiring triad pillar c
+    summary: runCount is module-level mutable state (singleton counter) in the adapter — sanctioned by D5 but it makes the metric process-global and not resettable between tests.
+    evidence: |
+      ```ts
+      let runCount = 0;
+      export function getRunCount(): number { return runCount; }
+      ...
+      runCount += 1;
+      ```
+      The counter is module-global mutable state. D5 explicitly chose "contador em memória"
+      over a metrics stack (YAGNI for a local CLI), so this is the planned design and the
+      metric correctly lives in the adapter, not the core (architecture.md §3: cross-cutting
+      concern at the boundary). Caveat: it is process-global with no reset, so multiple tests
+      asserting getRunCount() share state and become order-dependent (testing.md §6 anti-
+      pattern). It sits in the adapter (not the pure core), so the core stays clean.
+    recommended_action: |
+      Acceptable for M0. If a second test asserts the counter, give buildServer() its own
+      per-instance counter (closure) and expose it off the returned server, removing the
+      module-global. Not blocking for the single integration assertion in T2.1.
+
+  - id: F-arch-9
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 35
+    plan_ref: T2.1, ADR D1/D2 (adapter delegates 100% to core)
+    summary: MCP handler is a thin adapter that delegates entirely to the core; no business logic in the transport layer (SRP/DIP correct). Entrypoint guard prevents stdio connect on import.
+    evidence: |
+      ```ts
+      const step = await executeRequest({ method, url, headers, body });
+      const env = buildRunEnvelope([step]);
+      const path = await persistRun(env);
+      ...
+      if (import.meta.url === `file://${process.argv[1]}`) { main()... }
+      ```
+      Handler only orchestrates core calls + protocol shaping + stderr log. No HTTP execution
+      or persistence logic duplicated here. buildServer() factory enables in-memory testing
+      without stdio. Diagnostics go to console.error (stderr) per D5 — stdout reserved for
+      protocol. Imports only from ../core/index.js (D2 satisfied).
+    recommended_action: No action.
+
+  # ---------------- src/web/render.ts ----------------
+  - id: F-arch-10
+    severity: INFO
+    file: src/web/render.ts
+    line: 60
+    plan_ref: T3.1, ADR D2/D4 (pure render separated from I/O)
+    summary: renderRun is a pure function (no I/O), iterates steps (N-step ready), and escapes all dynamic content — correct SRP split from the http server.
+    evidence: |
+      ```ts
+      export function renderRun(env: RunEnvelope): string {
+        const steps = env.steps.map((s, i) => stepSection(s, i)).join("\n");
+        ...
+      }
+      ```
+      Pure transformation; escapeHtml applied to every dynamic value (anti-XSS at the render
+      boundary). Iterates env.steps so M1 multi-step is additive (D3). No fetch/fs imports —
+      render is testable without a socket. Type-only import from core (no runtime coupling).
+    recommended_action: No action.
+
+  # ---------------- src/web/server.ts ----------------
+  - id: F-arch-11
+    severity: LOW
+    file: src/web/server.ts
+    line: 35
+    plan_ref: T3.2, EC-1 (path traversal), ADR D2
+    summary: Web adapter correctly reads-only (no request execution) and validates :id against a UUID allowlist before path join; minor cohesion note on the inline routing.
+    evidence: |
+      ```ts
+      const RUN_ID_RE = /^[0-9a-f-]{36}$/i;
+      ...
+      if (!RUN_ID_RE.test(id)) return { status: 400, ... };  // EC-1 anti path-traversal
+      const env = await loadRun(join(dir, `${id}.json`));
+      ```
+      D2 boundary kept: server only loadRun + renderRun, never executeRequest. EC-1 MUST-FIX
+      honored: id validated BEFORE join, blocking ../ and %2f. handle() is a single function
+      doing method-gate + routing + load + error-map — fine at M0 scale (105 LoC, well under
+      the 500 budget), but it bundles routing and resource-loading responsibilities. Note: the
+      RUN_ID_RE `{36}` length is a heuristic for UUID shape; a stricter UUID pattern would be
+      marginally safer but the allowlist already excludes traversal chars.
+    recommended_action: |
+      No blocking change. If web routes grow in M2, extract a tiny route table to keep handle()
+      single-responsibility. The UUID regex could be tightened to the canonical 8-4-4-4-12
+      pattern for defense-in-depth, but current form already satisfies EC-1.
+
+  # ---------------- filename convention (cross-file) ----------------
+  - id: F-arch-12
+    severity: LOW
+    file: src/core/executeRequest.ts
+    line: 1
+    plan_ref: Baseline Context "Files that will be touched" table; agent rule "Files: kebab-case"
+    summary: Core source files use camelCase (executeRequest.ts, runSchema.ts, runStore.ts) which contradicts the agent's stated kebab-case file rule — but matches the plan's authoritative file table.
+    evidence: |
+      Agent definition § "Naming and module hygiene": "Files: kebab-case (user-store.ts,
+      not UserStore.ts or user_store.ts)". Actual files: runSchema.ts, executeRequest.ts,
+      runStore.ts (camelCase). HOWEVER the plan's Baseline Context table (the contract that
+      /implement executed against) explicitly names every file in camelCase:
+      `src/core/runSchema.ts`, `src/core/executeRequest.ts`, `src/core/runStore.ts`. The
+      project's checked-in rules/architecture.md §3 does NOT mandate kebab-case (it is silent
+      on file casing); the kebab-case rule lives only in this review agent's generic template.
+    recommended_action: |
+      Treat as a convention-documentation gap, not a code defect. The implementation faithfully
+      followed the plan. Either (a) adopt camelCase as the project convention by adding a "File
+      naming" line to rules/architecture.md §3, or (b) decide on kebab-case and rename in a
+      dedicated chore. Do NOT block M0 on this — the plan sanctioned the current names and
+      consistency is internally maintained (all core files are camelCase).
+
+  # ---------------- configs ----------------
+  - id: F-arch-13
+    severity: INFO
+    file: tsconfig.json
+    line: 11
+    plan_ref: T0.1 Deep Dives (strict, NodeNext, verbatimModuleSyntax)
+    summary: tsconfig enforces the DIP-supporting strictness the plan requires; vitest coverage excludes server.ts entrypoints as intended.
+    evidence: |
+      ```json
+      "strict": true, "noUncheckedIndexedAccess": true, "noImplicitOverride": true,
+      "verbatimModuleSyntax": true, "module": "NodeNext", "moduleResolution": "NodeNext"
+      ```
+      Matches plan invariants (strict:true, module:NodeNext, "type":"module" in package.json).
+      noImplicitOverride is what forces the `override` keyword used in errors.ts. Runtime deps
+      limited to sdk+zod (D4). vitest.config excludes server.ts from coverage (entrypoints with
+      listen/connect side-effects) — reasonable, though it slightly under-reports adapter cover.
+    recommended_action: No action for M0. Reconsider including server.ts in coverage once route logic grows (M2).
+
+verdict_input:
+  architecture_boundary_d2: SATISFIED
+  solid_per_task: SATISFIED (SRP clean per module; DIP enforced; no LSP/ISP violations; handlers thin)
+  design_patterns: Adapter (mcp/web) + factory (buildServer/buildWebServer) applied correctly, all ADR-justified (D1-D5); no invented patterns
+  coupling: acyclic, single inward direction (mcp→core, web→core); no cross-adapter imports
+  blocking_findings: none
+  note: >
+    No BLOCKER or HIGH findings. The DIP boundary (the highest-risk item per ROADMAP risk #2
+    and ADR D2) is concretely verified clean via grep. The 1 MEDIUM (F-arch-3, split clock
+    sources for durationMs vs startedAt) and 3 LOWs (env read in core, module-global counter,
+    filename convention gap) are quality/consistency notes, none blocking M0 merge.

@@ -1,0 +1,90 @@
+import type { RunEnvelope, RunStep, CapturedRequest, CapturedResponse } from "../core/index.js";
+
+/**
+ * Render puro (ADR D2): RunEnvelope → HTML. Sem I/O. Itera `steps` (suporta N — D3).
+ * Todo conteúdo dinâmico é escapado (anti-XSS). Corpos não-texto são omitidos
+ * explicitamente (tratamento binário completo é escopo M2).
+ */
+
+const TEXTUAL = /(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|\+json|\+xml)/i;
+
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function headersTable(headers: Record<string, string>): string {
+  const rows = Object.entries(headers)
+    .map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td></tr>`)
+    .join("");
+  if (!rows) return "<p class='muted'>(no headers)</p>";
+  return `<table class='headers'><thead><tr><th>Header</th><th>Value</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function bodyBlock(body: string, contentType: string | undefined): string {
+  if (body.length === 0) return "<p class='muted'>(empty body)</p>";
+  if (contentType && !TEXTUAL.test(contentType)) {
+    return `<p class='muted'>(binary omitted — content-type: ${escapeHtml(contentType)})</p>`;
+  }
+  return `<pre class='body'>${escapeHtml(body)}</pre>`;
+}
+
+function requestSection(req: CapturedRequest): string {
+  return `
+    <h3>Request</h3>
+    <p class='line'><span class='method'>${escapeHtml(req.method)}</span> <span class='url'>${escapeHtml(req.url)}</span></p>
+    ${headersTable(req.headers)}
+    ${bodyBlock(req.body ?? "", req.headers["content-type"])}`;
+}
+
+function responseSection(res: CapturedResponse): string {
+  return `
+    <h3>Response</h3>
+    <p class='line'><span class='status status-${Math.floor(res.status / 100)}xx'>${res.status} ${escapeHtml(res.statusText)}</span>
+      <span class='muted'>${res.timings.durationMs.toFixed(1)} ms</span></p>
+    ${headersTable(res.headers)}
+    ${bodyBlock(res.body, res.headers["content-type"])}`;
+}
+
+function stepSection(step: RunStep, index: number): string {
+  return `<section class='step'>
+    <h2>Step ${index + 1}</h2>
+    ${requestSection(step.request)}
+    ${responseSection(step.response)}
+  </section>`;
+}
+
+export function renderRun(env: RunEnvelope): string {
+  const steps = env.steps.map((s, i) => stepSection(s, i)).join("\n");
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Hodor run ${escapeHtml(env.runId)}</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem; color: #1a1a1a; }
+    h1 { font-size: 1.1rem; }
+    .meta { color: #666; font-size: .85rem; }
+    section.step { border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    .line { font-size: .95rem; }
+    .method { font-weight: 700; }
+    .url { color: #0b66c3; word-break: break-all; }
+    .status-2xx { color: #137333; font-weight: 700; }
+    .status-3xx { color: #8a6d00; font-weight: 700; }
+    .status-4xx, .status-5xx { color: #b00020; font-weight: 700; }
+    table.headers { border-collapse: collapse; font-size: .8rem; margin: .5rem 0; }
+    table.headers td, table.headers th { border: 1px solid #e0e0e0; padding: 2px 8px; text-align: left; }
+    pre.body { background: #f6f8fa; padding: .75rem; border-radius: 6px; overflow-x: auto; font-size: .8rem; }
+    .muted { color: #888; font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <h1>Hodor run <code>${escapeHtml(env.runId)}</code></h1>
+  <p class="meta">schemaVersion ${env.schemaVersion} · ${escapeHtml(env.createdAt)} · ${env.steps.length} step(s)</p>
+  ${steps}
+</body>
+</html>`;
+}
