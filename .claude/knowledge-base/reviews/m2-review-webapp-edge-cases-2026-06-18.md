@@ -1,38 +1,43 @@
-# Discover Edge Case Review — m2-review-webapp
+# Edge Case Review — m2-review-webapp (implementation plan)
 
 Date: 2026-06-18
-Discovery plan analyzed: knowledge-base/discoveries/plans/m2-review-webapp-plan.md
-Research questions analyzed: 6
-Edge cases found: 3 (MUST FIX: 0, SHOULD TEST: 1, DOCUMENT: 2)
-
-Reference-path pre-check: **7/7 cited paths exist** (verified via `test -e`). No fabricated citations.
+Plan: knowledge-base/plans/m2-review-webapp-plan.md (v1.0)
+Tasks analyzed: 6 (T1.1, T1.2, T1.3, T2.1, T2.2, T3.1)
+Edge cases found: 4 (MUST FIX: 2, SHOULD TEST: 1, DOCUMENT: 1)
 
 ## MUST FIX
 
-(nenhum)
+### EC-1: nota do verdict (input do humano) renderizada → XSS armazenado
+- **Affected task:** T2.2
+- **Family:** Input / Security
+- **Scenario:** o humano digita a `note` no form de verdict; ela é persistida e depois RENDERIZADA na página do run (selo de verdict) e na listagem. Se renderizada crua, `note = "<script>...</script>"` executa (stored XSS).
+- **Impact:** XSS armazenado — toda vez que alguém abre o run/listagem, o script roda.
+- **Suggested fix:** o render do verdict (selo + listagem) DEVE passar a `note` (e o `verdict`) por `escapeHtml` (já existe no `render.ts`). Adicionar teste `render_verdict_escapes_note`.
+
+### EC-2: run corrompido em `runs/` quebra a listagem inteira
+- **Affected task:** T2.1
+- **Family:** State / Resource
+- **Scenario:** `listRuns` faz `loadRun` por arquivo; `loadRun` LANÇA em JSON inválido/schema incompatível (fail-loud do M0). Um único arquivo corrompido em `runs/` faz a listagem inteira dar 500 — o revisor perde acesso a TODOS os runs.
+- **Impact:** um arquivo ruim derruba a página de listagem toda (disponibilidade).
+- **Suggested fix:** em `listRuns`, envolver o `loadRun` de cada arquivo em try/catch; arquivo inválido → pular (ou listar como "(inválido: {file})"), NÃO propagar. A página do run individual (`/runs/:id`) mantém o fail-loud (500) — lá o erro é específico daquele run. Adicionar teste `listing_skips_corrupt_run_file`.
 
 ## SHOULD TEST
 
-### EC-1: hoppscotch NÃO tem unit spec dos lenses — só `lenses.sample` (fixture)
-- **Affected question:** Q4 (tests corner)
-- **Suggested halt-loop checkpoint:** o Glob `__tests__/*.spec.ts` retornará VAZIO (só existe `__tests__/lenses.sample`, 2KB). Q4 deve então: (a) ler `lenses.sample` para entender a forma do fixture, e (b) registrar HONESTAMENTE que a seleção de lens do hoppscotch é coberta por fixture/snapshot, não por unit spec dedicado. NÃO fabricar um "padrão de teste de lens" inexistente. A recomendação para o Hodor é o oposto: adicionar um unit test próprio de `pickRenderer` (content-type → renderer), já que a ref não tem.
+### EC-3: POST verdict com campo `verdict` ausente/vazio
+- **Affected task:** T2.2
+- **Suggested test:** `post_verdict_missing_field_is_400` — body sem `verdict=` → `VerdictSchema.parse` lança (enum exige approved/rejected) → 400; nada gravado. (Cobre body vazio também.)
 
 ## DOCUMENT
 
-### EC-2: renderers são `.vue` (framework-bound) — adotar conceito, não código
-- **Affected question:** Q1, Q2, Q3
-- **Accepted risk:** os renderers (`components/lenses/renderers/*.vue`) e o `Card.vue` são Vue. O Hodor não tem Vue (e a decisão D1 do blueprint provavelmente será native-server-rendered). O execute deve extrair o CONCEITO (dispatch por content-type; campos de um item de listagem), traduzindo para o `render.ts` server-side — nunca portar/transliterar Vue. Já coberto nos checkpoints do plano; reafirmado.
-
-### EC-3: verdict não tem citação de referência
-- **Affected question:** (transversal)
-- **Accepted risk:** nenhuma ref clonada tem "humano aprova/rejeita execução". O modelo do verdict é design do Hodor (ADR D3 do plano), proposto no blueprint e fixado no `/to-plan` — marcado como NÃO-citável. Honestidade (Regra 3): não inventar citação de verdict.
+### EC-4: sem CSRF token no POST de verdict
+- **Affected task:** T2.2
+- **Accepted risk:** já listado em `## Drawbacks & Risks` (severity Medium). Uso local single-user (ROADMAP Constraints); origem é o operador no browser local. Hardening (token CSRF / SameSite) é follow-up se a app for exposta a rede. Registrar, não bloquear.
 
 ## Summary
 
-| Question | Edges found | MUST FIX | SHOULD TEST | DOCUMENT |
-|----------|-------------|----------|-------------|----------|
-| Q1/Q2/Q3 | 1 | 0 | 0 | 1 (EC-2 compart.) |
-| Q4 | 1 | 0 | 1 | 0 |
-| (verdict) | 1 | 0 | 0 | 1 |
+| Task | Edges found | MUST FIX | SHOULD TEST | DOCUMENT |
+|------|-------------|----------|-------------|----------|
+| T2.1 | 1 | 1 | 0 | 0 |
+| T2.2 | 3 | 1 | 1 | 1 |
 
-**Verdict:** DISCOVERY PLAN OK (1 checkpoint EC-1 a absorver em Q4; 2 DOCUMENT reafirmados)
+**Verdict:** PLAN NEEDS ADJUSTMENT (2 MUST FIX — EC-1 escapar note/verdict no render; EC-2 listagem tolera run corrompido; 1 SHOULD-TEST; 1 DOCUMENT já no plano)
