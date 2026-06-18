@@ -11,3 +11,4 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 
 ### Fixed
 - `rules/discover-plan-thresholds.txt`: bandas de verdict estavam em formato `KEY = VALUE`, incompatível com o parser pipe-delimited de `run_discover_plan_score.py`; o gate `/discover-plan-confidence` retornava `INVALID` para qualquer plano (até score 100 sem hard caps). Corrigido para a convenção `BAND|threshold` (igual a `plan-confidence-thresholds.txt`).
+- `skills/plan-confidence/scripts/check_evidence_citations.py`: `_scan_blueprint_refs` só resolvia blueprints em `<root>/knowledge-base/discoveries/blueprints/`, ignorando o layout `.claude/knowledge-base/...` (que `_resolve_rule_file` já suportava). Citação a blueprint existente era reportada como `fabricated_citation` → `/plan-confidence` INVALID falso. Corrigido para tentar ambos os layouts.

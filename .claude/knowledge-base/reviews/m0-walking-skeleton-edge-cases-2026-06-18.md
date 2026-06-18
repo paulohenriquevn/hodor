@@ -1,44 +1,44 @@
-# Discover Edge Case Review — m0-walking-skeleton
+# Edge Case Review — m0-walking-skeleton (implementation plan)
 
 Date: 2026-06-18
-Discovery plan analyzed: knowledge-base/discoveries/plans/m0-walking-skeleton-plan.md
-Research questions analyzed: 6
-Edge cases found: 3 (MUST FIX: 1, SHOULD TEST: 2, DOCUMENT: 0)
-
-Reference-path pre-check: **14/14 cited paths exist** (verified via `test -e`). No fabricated citations in the plan.
+Plan: knowledge-base/plans/m0-walking-skeleton-plan.md (v1.0)
+Tasks analyzed: 8 (T0.1, T1.1, T1.2, T1.3, T2.1, T3.1, T3.2, T4.1)
+Edge cases found: 5 (MUST FIX: 1, SHOULD TEST: 2, DOCUMENT: 2)
 
 ## MUST FIX
 
-### EC-1: Import do quickstart usa alias interno do monorepo, não o pacote publicado
-- **Affected question:** Q1, Q5
-- **Family:** Interpretation / Citation
-- **Scenario:** `examples/server-quickstart/src/index.ts` importa `from '@modelcontextprotocol/server'` e `from 'zod/v4'`. Esses são aliases do workspace do monorepo do SDK — NÃO o que um consumidor externo instala. O M0 vai `npm install @modelcontextprotocol/sdk` e importar de um caminho publicado (historicamente `@modelcontextprotocol/sdk/server/mcp.js`). Se o blueprint copiar literalmente o import do exemplo, o `npm install` do M0 quebra.
-- **Impact:** Blueprint recomenda um import path inexistente para o consumidor → primeira linha de código do M0 falha no `import`.
-- **Suggested fix:** Em Q5, adicionar ao método: "ler o `name` e o mapa `exports` do `knowledge-base/references/mcp-typescript-sdk/package.json` para registrar o **nome do pacote publicado e os entrypoints reais de import**, não o alias do workspace". O blueprint deve citar o import publicado, marcando o alias do exemplo como detalhe interno do monorepo.
+### EC-1: Path traversal em `GET /runs/:id` (web server)
+- **Affected task:** T3.2
+- **Family:** Input / Permission
+- **Scenario:** o `:id` da URL é input do usuário e é interpolado no path do arquivo (`${dir}/${id}.json`). Um pedido `GET /runs/..%2f..%2f..%2fetc%2fpasswd%00` (ou `../../package.json`) faz `loadRun` ler/expor arquivos fora de `runs/`.
+- **Impact:** leitura arbitrária de arquivos do host (information disclosure) — furo de segurança real, mesmo em uso local.
+- **Suggested fix:** validar o `:id` contra um regex de UUID (`/^[0-9a-f-]{36}$/i`) antes de montar o path; id inválido → 400. (≤3 linhas: `if (!/^[0-9a-f-]{36}$/i.test(id)) { res.writeHead(400); return res.end('bad id'); }`)
 
 ## SHOULD TEST
 
-### EC-2: hoppscotch-data tem ~18 schemas versionados — risco de scope creep ao ler todos
-- **Affected question:** Q3
-- **Suggested halt-loop checkpoint:** Antes de iterar Q3, limitar a leitura a `rest/v/0.ts` (versão base), ao `index.ts` que encadeia/migra versões, e à versão mais alta presente (para ver a forma final). NÃO ler todos os `v/N.ts` — o padrão de migração se entende com 2–3 amostras. Marcar a leitura exaustiva como fora de escopo.
+### EC-2: `fetch` lança quando GET/HEAD recebe body
+- **Affected task:** T1.2
+- **Suggested test:** `test_execute_request_get_with_body_is_handled` — chamar `executeRequest({method:'GET', url, body:'x'})`; assert que ou o body é ignorado para GET/HEAD, ou um `RequestExecutionError` claro é lançado (não um `TypeError` cru do fetch vazando ao caller).
 
-### EC-3: Exemplos do SDK podem não ter teste dedicado da execução de tool
-- **Affected question:** Q4
-- **Suggested halt-loop checkpoint:** Se o Glob por `**/*.test.ts`/`**/*.spec.ts` em `examples/server/` retornar vazio, cair para o diretório de testes do core do SDK (procurar `**/*.test.ts` sob `knowledge-base/references/mcp-typescript-sdk/` excluindo `examples/`) e citar de lá. Bruno tem testes no `bruno-cli`/`bruno-tests`; o lado MCP é o que tem risco de exemplos sem teste.
+### EC-3: Headers multi-valor (ex. `Set-Cookie`) colapsam em `Record<string,string>`
+- **Affected task:** T1.2, T3.1
+- **Suggested test:** `test_execute_request_captures_repeated_headers` — alvo que envia dois `Set-Cookie`; assert que o valor capturado preserva ambos (a Headers API junta com `, `) e o render os mostra. Documentar a limitação se a junção for aceitável no M0.
 
 ## DOCUMENT
 
-(nenhum)
+### EC-4: SSRF é inerente ao produto (fetch de URL arbitrária)
+- **Accepted risk:** `run_request` executar qualquer URL é a função do produto (testar APIs). Em uso local single-user (ROADMAP Constraints), SSRF é risco aceito no M0; controles de egress/auth são escopo pós-V1 (out of scope declarado no ROADMAP: auth/multi-tenant). Registrar no plano, não bloquear.
+
+### EC-5: corpo de resposta grande carregado inteiro em memória (`res.text()`)
+- **Accepted risk:** já listado em `## Drawbacks & Risks` (severity Low) com mitigação em M2 (truncamento/lazy-load). Sem ação no M0.
 
 ## Summary
 
-| Question | Edges found | MUST FIX | SHOULD TEST | DOCUMENT |
-|----------|-------------|----------|-------------|----------|
-| Q1 | 1 (compart. c/ Q5) | 0 | 0 | 0 |
-| Q2 | 0 | 0 | 0 | 0 |
-| Q3 | 1 | 0 | 1 | 0 |
-| Q4 | 1 | 0 | 1 | 0 |
-| Q5 | 1 | 1 | 0 | 0 |
-| Q6 | 0 | 0 | 0 | 0 |
+| Task | Edges found | MUST FIX | SHOULD TEST | DOCUMENT |
+|------|-------------|----------|-------------|----------|
+| T1.2 | 3 | 0 | 2 | 1 |
+| T3.1 | 1 | 0 | 1 (compart.) | 0 |
+| T3.2 | 1 | 1 | 0 | 0 |
+| outros | 1 | 0 | 0 | 1 |
 
-**Verdict:** DISCOVERY PLAN NEEDS ADJUSTMENT (1 MUST FIX — EC-1 a absorver em Q5; 2 checkpoints a adicionar)
+**Verdict:** PLAN NEEDS ADJUSTMENT (1 MUST FIX — EC-1 path traversal a absorver em T3.2; 2 testes SHOULD em T1.2/T3.1; 2 DOCUMENT)
