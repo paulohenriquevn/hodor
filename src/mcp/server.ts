@@ -1,7 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { executeRequest, buildRunEnvelope, persistRun, RunEnvelopeSchema } from "../core/index.js";
+import {
+  executeRequest,
+  buildRunEnvelope,
+  persistRun,
+  RunEnvelopeSchema,
+  runScenario,
+  ScenarioSchema,
+} from "../core/index.js";
 
 /**
  * Adaptador MCP (ADR D1/D2/D5). Expõe a tool `run_request` sobre stdio,
@@ -9,10 +16,15 @@ import { executeRequest, buildRunEnvelope, persistRun, RunEnvelopeSchema } from 
  * diagnóstico vai a `console.error` (stderr).
  */
 
-// Runtime metric (ADR D5 / wiring triad pillar c): contador de runs executados.
+// Runtime metric (ADR D5 / wiring triad pillar c): contadores de runs executados.
 let runCount = 0;
 export function getRunCount(): number {
   return runCount;
+}
+
+let scenarioRunCount = 0;
+export function getScenarioRunCount(): number {
+  return scenarioRunCount;
 }
 
 /** Constrói o McpServer configurado (sem conectar) — permite teste in-memory. */
@@ -49,6 +61,31 @@ export function buildServer(): McpServer {
           durationMs: step.response.timings.durationMs,
           path,
         }),
+      );
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(env, null, 2) }],
+        structuredContent: env,
+      };
+    },
+  );
+
+  // M1 — tool de cenário multi-step (ADR D5). Delega 100% à engine do core.
+  server.registerTool(
+    "run_scenario",
+    {
+      title: "Run multi-step scenario",
+      description:
+        "Executa um cenário multi-step (steps com captura de variáveis + asserts), persiste o run e retorna o resultado por step.",
+      inputSchema: ScenarioSchema.shape,
+      outputSchema: RunEnvelopeSchema.shape,
+    },
+    async (scenario) => {
+      // Caller de produção da engine (wiring triad pillar a).
+      const env = await runScenario(scenario);
+      const path = await persistRun(env);
+      scenarioRunCount += 1;
+      console.error(
+        JSON.stringify({ event: "run_scenario", steps: env.steps.length, path }),
       );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(env, null, 2) }],
