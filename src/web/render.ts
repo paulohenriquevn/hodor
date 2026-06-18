@@ -12,7 +12,9 @@ import type {
  * explicitamente (tratamento binário completo é escopo M2).
  */
 
+const JSON_CT = /(application\/json|\+json)/i;
 const TEXTUAL = /(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|\+json|\+xml)/i;
+const MAX_BODY = 64 * 1024; // 64 KB — acima disso, trunca (risco #2)
 
 export function escapeHtml(s: string): string {
   return s
@@ -20,6 +22,24 @@ export function escapeHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/**
+ * Dispatch por content-type (ADR D2, espelha `getSuitableLenses` do hoppscotch):
+ * "json" → pretty; "text" → <pre> escapado; "binary" → metadados (NÃO embute).
+ * Case-insensitive; content-type ausente → "binary" (fallback seguro).
+ */
+export function pickRenderer(contentType?: string): "json" | "text" | "binary" {
+  if (!contentType) return "binary";
+  if (JSON_CT.test(contentType)) return "json";
+  if (TEXTUAL.test(contentType)) return "text";
+  return "binary";
+}
+
+/** Trunca texto acima de `max` (risco #2) — não embute body gigante no HTML. */
+export function truncate(s: string, max = MAX_BODY): { text: string; truncated: boolean; originalLength: number } {
+  if (s.length <= max) return { text: s, truncated: false, originalLength: s.length };
+  return { text: s.slice(0, max), truncated: true, originalLength: s.length };
 }
 
 function headersTable(headers: Record<string, string>): string {
@@ -32,10 +52,23 @@ function headersTable(headers: Record<string, string>): string {
 
 function bodyBlock(body: string, contentType: string | undefined): string {
   if (body.length === 0) return "<p class='muted'>(empty body)</p>";
-  if (contentType && !TEXTUAL.test(contentType)) {
-    return `<p class='muted'>(binary omitted — content-type: ${escapeHtml(contentType)})</p>`;
+  const kind = pickRenderer(contentType);
+  if (kind === "binary") {
+    return `<p class='muted'>(binary omitted — content-type: ${escapeHtml(contentType ?? "unknown")})</p>`;
   }
-  return `<pre class='body'>${escapeHtml(body)}</pre>`;
+  const { text, truncated, originalLength } = truncate(body);
+  let rendered = text;
+  if (kind === "json") {
+    try {
+      rendered = JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      rendered = text; // body não-parseável como JSON apesar do content-type → cru (escapado)
+    }
+  }
+  const notice = truncated
+    ? `<p class='muted'>(truncado — exibindo ${MAX_BODY} de ${originalLength} bytes)</p>`
+    : "";
+  return `<pre class='body'>${escapeHtml(rendered)}</pre>${notice}`;
 }
 
 function requestSection(req: CapturedRequest): string {

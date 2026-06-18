@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildRunEnvelope, persistRun, loadRun } from "./runStore.js";
-import type { RunStep } from "./runSchema.js";
+import { RunEnvelopeSchema, type RunStep } from "./runSchema.js";
 
 const step: RunStep = {
   request: { method: "GET", url: "http://127.0.0.1:8080/ok", headers: {} },
@@ -24,6 +24,19 @@ async function tmp(): Promise<string> {
 }
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
+
+describe("runStore — M2 envelope name", () => {
+  it("build_run_envelope_includes_name_when_provided", () => {
+    const env = buildRunEnvelope([step], { now: () => 0, newId: () => "n1" }, "meu-cenário");
+    expect(env.name).toBe("meu-cenário");
+  });
+
+  it("build_run_envelope_omits_name_when_absent", () => {
+    const env = buildRunEnvelope([step], { now: () => 0, newId: () => "n2" });
+    expect("name" in env).toBe(false);
+    expect(RunEnvelopeSchema.safeParse(env).success).toBe(true);
+  });
 });
 
 describe("runStore", () => {
