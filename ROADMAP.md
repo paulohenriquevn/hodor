@@ -74,7 +74,7 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 > Each milestone has a checkbox in its header. Flip `[ ]` → `[x]` as you complete it. Status lives in this document; no external tracker required.
 
-### M0 — [ ] Walking skeleton
+### M0 — [x] Walking skeleton
 
 **Objective:** Provar a arquitetura inteira na fatia mais fina: uma tool MCP executa uma request HTTP e a web app mostra o resultado capturado.
 
