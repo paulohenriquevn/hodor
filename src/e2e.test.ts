@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { buildServer } from "./mcp/server.js";
+import { buildServer, getRunCount } from "./mcp/server.js";
 import { buildWebServer } from "./web/server.js";
 import { loadRun } from "./core/index.js";
 
@@ -56,6 +56,7 @@ describe("E2E walking skeleton", () => {
     const client = new Client({ name: "e2e-agent", version: "0.0.0" });
     await client.connect(clientT);
 
+    const metricBefore = getRunCount();
     const result = (await client.callTool({
       name: "run_request",
       arguments: { method: "POST", url: targetUrl, body: "{}" },
@@ -63,6 +64,8 @@ describe("E2E walking skeleton", () => {
 
     expect(result.structuredContent?.steps[0]?.response.status).toBe(200);
     const runId = result.structuredContent!.runId;
+    // Runtime-metric proof (DoD): a métrica foi exercitada no loop, não só compila.
+    expect(getRunCount()).toBe(metricBefore + 1);
     await client.close();
 
     // 3. Resultado persistido em arquivo (verifica via core).

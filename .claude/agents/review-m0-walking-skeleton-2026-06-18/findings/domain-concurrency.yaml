@@ -1,0 +1,201 @@
+agent: review-m0-walking-skeleton-domain-concurrency
+review_target: main..HEAD for plan m0-walking-skeleton
+domain: concurrency
+domain_specific_patterns_checked:
+  - "mutable global counter (runCount) incremented in async tool handler — lost-update risk"
+  - "AbortController + setTimeout timer cleanup across all fetch code paths (finally)"
+  - "timer scope vs response body read (await response.text outside try/finally)"
+  - "persistRun runId collision under concurrency (crypto.randomUUID)"
+  - "non-atomic writeFile vs concurrent loadRun read (torn-read)"
+  - "http.Server per-request file read — shared mutable state between requests"
+  - "latestRunId readdir+stat TOCTOU"
+  - "honesty of every '#### Concurrency tests (none — single-threaded)' marker"
+
+verdict_summary: >
+  The plan's blanket '(none — single-threaded)' markers are JUSTIFIED for M0. No
+  true data race exists in the Node single-threaded event-loop model. The runCount
+  increment is atomic (no await between read and write). runId uniqueness via
+  randomUUID prevents file collision. Two LATENT risks are correctly out of M0
+  scope but should be tracked for M1+ (concurrent runs / shared runs dir): a
+  non-atomic writeFile that can be torn-read by a concurrent web GET, and the
+  fetch-timeout not covering the response-body read. Neither is a BLOCKER/HIGH at M0.
+
+findings:
+  - id: F-dom-conc-1
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 40
+    plan_ref: "ADR D5 — contador em memória de runs (runtime metric); T2.1 #### Concurrency tests (none — single-threaded)"
+    domain_anchor: "Node.js single-threaded event-loop concurrency model"
+    summary: >
+      runCount is mutable global state incremented in an async handler, but
+      `runCount += 1` is NOT subject to lost-update. The read-modify-write
+      compiles to a single synchronous statement with no `await` between the
+      read and the write; the three awaits (executeRequest / buildRunEnvelope /
+      persistRun) all precede the increment. Even if two run_request invocations
+      interleave at those await points, each increment runs atomically on the
+      single thread. The '(none — single-threaded)' marker is HONEST.
+    evidence: |
+      ```ts
+      const step = await executeRequest({ method, url, headers, body });
+      const env = buildRunEnvelope([step]);
+      const path = await persistRun(env);
+      runCount += 1;   // <-- no await between read and write: atomic on the event loop
+      ```
+      Lost update would require a yield point (await) BETWEEN reading runCount
+      and writing it back. There is none. JS has no preemptive thread switch
+      mid-statement. No race.
+    recommended_action: >
+      None for M0. If runCount ever feeds a billing/quota decision OR the adapter
+      moves to worker_threads / a multi-process transport (post-M4), revisit with
+      an Atomics-backed SharedArrayBuffer or per-process aggregation. Not needed now.
+
+  - id: F-dom-conc-2
+    severity: INFO
+    file: src/core/executeRequest.ts
+    line: 56
+    plan_ref: "Drawbacks & Risks: 'fetch nativo não tem timeout' → AbortController; T1.2 #### Concurrency tests note"
+    domain_anchor: "AbortController/timer lifecycle — no leaked timers"
+    summary: >
+      The setTimeout timer is cleared in a `finally` block, so it is cleared on
+      BOTH the success path and the throw path of `await fetch`. No timer leak.
+      The abort-vs-network-failure disambiguation via `controller.signal.aborted`
+      is correct.
+    evidence: |
+      ```ts
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        response = await fetch(url, { ..., signal: controller.signal });
+      } catch (cause) {
+        const reason = controller.signal.aborted ? `timeout: ${url}` : `request failed: ${url}`;
+        throw new RequestExecutionError(reason, { cause });
+      } finally {
+        clearTimeout(timer);   // <-- cleared on success AND on throw
+      }
+      ```
+    recommended_action: None. Timer lifecycle is correct.
+
+  - id: F-dom-conc-3
+    severity: LOW
+    file: src/core/executeRequest.ts
+    line: 61
+    plan_ref: "Drawbacks & Risks: 'request pendurado trava o run' → timeout 30s; Failure scenarios: 'request pendurado (sem resposta)'"
+    domain_anchor: "timeout scope — body read is unguarded after timer clears"
+    summary: >
+      The timeout/abort guards only the `fetch()` call (headers received). The
+      timer is cleared in `finally` BEFORE `await response.text()` runs at line 61.
+      A server that returns headers fast but streams/stalls the body indefinitely
+      (slowloris-style response body) would hang `response.text()` with NO timeout
+      protecting it — the 'request pendurado' failure mode the plan claims to cover
+      is only partially covered (connect+headers, not body). Latent, not a race;
+      not exercised by M0's single serial agent against trusted local test servers.
+    evidence: |
+      ```ts
+        } finally {
+          clearTimeout(timer);          // timer gone here
+        }
+        const durationMs = Math.max(0, performance.now() - t0);
+        const responseBody = await response.text();   // <-- no timeout covers this await
+      ```
+      The plan's Failure scenario "request pendurado (sem resposta)" is tested with
+      "um http.Server que nunca responde" — that path aborts at fetch() and is
+      covered. A server that sends headers then stalls the body is NOT covered.
+    recommended_action: >
+      M0: acceptable (documented timeout covers the dominant hang case; targets are
+      local trusted test servers). M1+ (when run_request hits arbitrary remote APIs
+      under less control): move `await response.text()` inside the try block before
+      `clearTimeout`, OR re-arm the AbortController to also cancel the body read.
+      Track as a follow-up note in the M1 plan.
+
+  - id: F-dom-conc-4
+    severity: INFO
+    file: src/core/runStore.ts
+    line: 25
+    plan_ref: "ADR D4 — newId default crypto.randomUUID; T1.3 #### Concurrency tests (none — single-threaded)"
+    domain_anchor: "filename uniqueness under concurrent persistRun"
+    summary: >
+      Concurrent persistRun calls cannot collide on the output filename: runId is
+      a v4 UUID from crypto.randomUUID (collision probability negligible). Two
+      simultaneous runs write to two distinct `${dir}/${runId}.json` paths. The
+      mkdir is `{ recursive: true }`, idempotent under concurrency. HONEST marker.
+    evidence: |
+      ```ts
+      const newId = deps.newId ?? randomUUID;     // distinct id per run
+      // persistRun:
+      await mkdir(dir, { recursive: true });       // idempotent, no EEXIST race
+      const path = join(dir, `${env.runId}.json`); // unique path per run
+      await writeFile(path, JSON.stringify(env, null, 2), "utf8");
+      ```
+    recommended_action: None. UUID-named files are race-free for writes.
+
+  - id: F-dom-conc-5
+    severity: LOW
+    file: src/web/server.ts
+    line: 79
+    plan_ref: "T3.2 #### Concurrency tests (none — single-threaded): 'cada GET lê o arquivo independentemente; não há invariante de corrida'"
+    domain_anchor: "non-atomic writeFile vs concurrent read (torn read)"
+    summary: >
+      The plan justifies '(none)' by saying each GET reads the file independently
+      with no shared mutable state between requests — TRUE for read-vs-read. But it
+      does NOT address read-vs-WRITE: persistRun uses a plain writeFile (no
+      temp-file + atomic rename). If a web GET's loadRun reads a run file at the
+      same instant a (future, concurrent) run overwrites/creates it, JSON.parse can
+      see a truncated/partial file and throw — surfacing as a 500 (caught at
+      server.ts:44-48), not a crash. In M0 this is NOT exercised: a single serial
+      agent produces a run, THEN a human opens the web app; the write completes
+      before any read. The marker is honest for the M0 usage pattern but masks the
+      torn-read risk for the M1+ multi-run / concurrent-access pattern.
+    evidence: |
+      ```ts
+      // runStore.ts:38 — non-atomic write (no tmp+rename):
+      await writeFile(path, JSON.stringify(env, null, 2), "utf8");
+      // web/server.ts:79 — concurrent reader:
+      const env = await loadRun(join(dir, `${id}.json`));
+      ```
+      writeFile truncates-then-writes; a reader observing the gap gets a partial
+      file → ZodError/SyntaxError → 500. New files (distinct UUID) are the common
+      case and are safe; the torn read only applies to overwrite/in-progress write
+      of the SAME id, which M0 never does.
+    recommended_action: >
+      M0: acceptable — document explicitly that web review is read-after-write in
+      practice (serial agent then human). M1+ / any concurrent producer+consumer on
+      a shared runs dir: make persistRun atomic (write to `${path}.tmp` then
+      `rename` — rename is atomic on POSIX same-filesystem). Cheap, removes the
+      torn-read class entirely. Recommend adding to the M1 plan's Drawbacks.
+
+  - id: F-dom-conc-6
+    severity: INFO
+    file: src/web/server.ts
+    line: 26
+    plan_ref: "T3.2 — GET / redireciona ao run mais recente (Q2)"
+    domain_anchor: "TOCTOU between readdir and stat in latestRunId"
+    summary: >
+      latestRunId does readdir then stat()s each entry in a loop — a classic TOCTOU
+      window (a file listed by readdir could be removed before stat). In M0 nothing
+      deletes run files, so the window is never hit. If a stat ever raced a deletion
+      it would reject the whole `GET /` with a 500 (the loop has no per-entry catch),
+      not corrupt data. Low blast radius, not exercised at M0.
+    evidence: |
+      ```ts
+      entries = await readdir(dir);                 // T (time of check)
+      for (const file of jsons) {
+        const s = await stat(join(dir, file));      // O (time of use) — could ENOENT if deleted between
+        ...
+      }
+      ```
+    recommended_action: >
+      M0: none (no deletion path exists). M1+ if a cleanup/rotation path is added:
+      wrap the per-entry stat in a try/catch that skips ENOENT entries so one
+      vanished file does not 500 the whole index.
+
+blocker_high_summary:
+  blockers: 0
+  high: 0
+  notes: >
+    No BLOCKER and no HIGH concurrency findings. Every '(none — single-threaded)'
+    marker in the plan is JUSTIFIED for the M0 scope (single serial agent, local
+    trusted targets, read-after-write web review). Two LOW latent risks
+    (non-atomic write torn-read at runStore.ts:38; unguarded body-read timeout at
+    executeRequest.ts:61) are correctly out of M0 scope but should be tracked as
+    follow-ups for M1+, when concurrent producers/consumers and arbitrary remote
+    targets enter the picture.

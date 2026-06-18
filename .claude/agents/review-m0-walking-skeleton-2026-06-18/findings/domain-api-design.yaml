@@ -1,0 +1,154 @@
+agent: review-m0-walking-skeleton-domain-api-design
+review_target: main..HEAD for plan m0-walking-skeleton
+domain: api-design
+sdk_verified: "@modelcontextprotocol/sdk 1.29.0 (installed), Node v22.22.2; full suite 25/25 green"
+domain_specific_patterns_checked:
+  - "MCP tool design: inputSchema as ZodRawShape (v1.x), structuredContent + content return shape"
+  - "MCP outputSchema declaration vs structuredContent contract"
+  - "MCP SDK v1.x idiom: registerTool / StdioServerTransport / entrypoint guard"
+  - "stdio protocol discipline: stdout reserved for protocol, logs on stderr (ADR D5)"
+  - "fetch HTTP capture: 4xx/5xx non-throwing, network/abort throws typed error (ADR D4)"
+  - "fetch timeout via AbortController + abort-vs-network disambiguation"
+  - "Headers capture incl. multi-valued Set-Cookie (EC-3)"
+  - "Run envelope versioning + boundary validation (loadRun zod parse)"
+  - "Web server routing + HTTP status codes (200/302/400/404/405/500)"
+  - "HTTP response correctness: content-type/charset, Allow header, HEAD handling"
+
+findings:
+  - id: F-dom-1
+    severity: HIGH
+    file: src/mcp/server.ts
+    line: 22-55
+    plan_ref: "Blueprint Coverage Corner 4 T1 (registerTool with input/output schema + structuredContent, mcpServerOutputSchema.ts:17); Plan T2.1 Deep Dives"
+    domain_anchor: "MCP spec — structuredContent SHOULD be paired with an outputSchema so the client can validate the structured payload"
+    summary: >-
+      The tool returns `structuredContent: env` but declares NO `outputSchema`. The
+      blueprint's reference pattern (mcpServerOutputSchema.ts) pairs structuredContent
+      WITH an outputSchema, and the plan's ADR D1 consequence note ("inputSchema/outputSchema
+      are ZodRawShape in v1.x") presumes both. Verified against installed SDK 1.29.0
+      (server/mcp.js validateToolOutput): when `tool.outputSchema` is absent the SDK
+      returns early and performs ZERO validation of structuredContent. The result: the
+      tool ships an unvalidated, undocumented structured payload — the machine-readable
+      contract that other agents depend on (the whole point of this tool) is never
+      advertised to the client and never validated by the SDK.
+    evidence: |
+      server.ts (no outputSchema in the config object):
+        server.registerTool("run_request", {
+          title: ..., description: ...,
+          inputSchema: { method, url, headers?, body? },
+          // <-- no outputSchema
+        }, async (...) => ({ content: [...], structuredContent: env }));
+
+      Installed SDK server/mcp.js validateToolOutput:
+        if (!tool.outputSchema) { return; }          // skips validation entirely
+        ...
+        if (!result.structuredContent) { throw ... }  // only enforced WHEN outputSchema set
+
+      Blueprint reference (mcpServerOutputSchema.ts:17/:46) declares outputSchema alongside structuredContent.
+    recommended_action: >-
+      Declare `outputSchema` from the run envelope shape so the SDK exposes it in
+      tools/list and validates the returned structuredContent. The core already owns
+      the zod schema — expose the RunEnvelope ZodRawShape (e.g. the `.shape` of
+      RunEnvelopeSchema, or a small RunEnvelopeShape export) and pass it as
+      `outputSchema`. This advertises the contract to consuming agents AND makes
+      malformed envelopes fail loud at the MCP boundary (consistent with loadRun's
+      boundary validation in the web adapter).
+
+  - id: F-dom-2
+    severity: MEDIUM
+    file: src/web/server.ts
+    line: 59-62
+    plan_ref: "Task description: 'web server tem roteamento correto e códigos HTTP corretos (405)'"
+    domain_anchor: "RFC 9110 §15.5.6 — a 405 (Method Not Allowed) response MUST generate an Allow header field containing the supported methods"
+    summary: >-
+      The 405 branch returns `method not allowed` but omits the mandatory `Allow`
+      header. RFC 9110 makes the Allow header a MUST on 405 responses; without it the
+      response is non-conformant and a client cannot discover which method to retry.
+    evidence: |
+      if (method !== "GET") {
+        return { status: 405, contentType: "text/plain", body: "method not allowed" };
+        // missing: Allow: GET, HEAD
+      }
+    recommended_action: >-
+      Add an `Allow: GET` (or `GET, HEAD` once HEAD is supported — see F-dom-3) header
+      to the 405 reply. The Reply struct already supports extra headers via the
+      `location` precedent; generalize it or special-case the Allow header in
+      buildWebServer.
+
+  - id: F-dom-3
+    severity: LOW
+    file: src/web/server.ts
+    line: 60-61
+    plan_ref: "Q2 resolution (GET / and GET /runs/:id); ROADMAP §M0 web app renders a run"
+    domain_anchor: "RFC 9110 §9.3.2 — HEAD is identical to GET without a body; servers SHOULD support HEAD wherever GET is supported"
+    summary: >-
+      HEAD requests are rejected with 405. A correct HTTP server SHOULD answer HEAD
+      identically to GET but with an empty body. Browsers, link checkers and health
+      probes routinely issue HEAD. Minor for an M0 local single-user app, but it is a
+      real HTTP-correctness gap and the fix is cheap.
+    evidence: |
+      if (method !== "GET") { return { status: 405, ... }; }  // HEAD also hits this
+    recommended_action: >-
+      Treat HEAD like GET for routing/status, then drop the body in buildWebServer
+      (res.end() with no payload) when method === "HEAD". If intentionally out of M0
+      scope, document it as a deferred item rather than silently 405-ing.
+
+  - id: F-dom-4
+    severity: LOW
+    file: src/web/server.ts
+    line: 17-33 and 66-70
+    plan_ref: "T3.2 EC-1 MUST-FIX (anti path-traversal on :id, RUN_ID_RE UUID allowlist); Q2 (/ -> latest)"
+    domain_anchor: "Consistency invariant: the writer (runStore.persistRun) names files {randomUUID}.json; the reader (RUN_ID_RE) only accepts 36-char UUID-shaped ids"
+    summary: >-
+      `latestRunId` derives the redirect target from any `*.json` filename in the runs
+      dir and `GET /` issues a 302 to `/runs/{thatId}` WITHOUT validating it against
+      RUN_ID_RE. If the runs dir ever contains a non-UUID-named `.json` (a hand-dropped
+      file, a future run-id scheme, or HODOR_RUNS_DIR pointed at a shared/dirty dir),
+      `/` redirects to a `/runs/:id` that the same server then rejects with 400 — a
+      self-inconsistent 302→400 loop. The path-traversal defense itself is sound (the
+      redirect only ever points at a filename that already exists in the dir, so it is
+      not a security hole), but the routing contract is incoherent.
+    evidence: |
+      // GET / : no RUN_ID_RE check on the derived id before redirecting
+      const id = await latestRunId(dir);
+      return { status: 302, ..., location: `/runs/${id}` };
+      // GET /runs/:id : strict UUID gate that the above id is NOT checked against
+      if (!RUN_ID_RE.test(id)) return { status: 400, ... };
+    recommended_action: >-
+      Filter `latestRunId` candidates through RUN_ID_RE (validate `file.slice(0,-5)`)
+      so `/` only ever redirects to an id the `/runs/:id` route will accept. Keeps the
+      writer/reader id contract single-sourced.
+
+  - id: F-dom-5
+    severity: LOW
+    file: src/web/server.ts
+    line: 68
+    plan_ref: "T3.2 Deep Dives (no runs -> 200 'no runs yet')"
+    domain_anchor: "HTTP content-type correctness — 'no runs yet' is served with the inherited text/plain default which is acceptable, but the empty-body 302 and redirects send text/plain with empty body"
+    summary: >-
+      Minor: the 302 redirect reply sets `content-type: text/plain` with an empty body.
+      Harmless, but a redirect conventionally carries no content-type or a tiny HTML
+      stub. Not worth blocking; noting for completeness of the HTTP-status-code audit
+      the task requested.
+    evidence: |
+      return { status: 302, contentType: "text/plain", body: "", location: `/runs/${id}` };
+    recommended_action: >-
+      Optional — omit the content-type on the 302 or leave as-is (browsers follow the
+      Location regardless). No action required for M0.
+
+positive_findings:
+  - "MCP SDK v1.x usage is idiomatic and correct: registerTool with a ZodRawShape inputSchema (NOT z.object — matches ADR D1 consequence), McpServer factory + StdioServerTransport, and the `import.meta.url === file://${process.argv[1]}` entrypoint guard so import/test never opens stdio."
+  - "inputSchema validates at the boundary: `url: z.string().url()` rejects malformed URLs before the handler runs; the SDK wraps thrown RequestExecutionError into { content, isError:true } (verified in server/mcp.js createToolError) so a network failure becomes a proper MCP tool error, never a crash — fail-fast honored (Rule 8)."
+  - "stdio discipline correct (ADR D5): every diagnostic uses console.error (stderr); stdout stays exclusive to the MCP protocol; the structured runtime-metric log {event,status,durationMs,path} is on stderr."
+  - "HTTP capture in executeRequest is correct: 4xx/5xx are captured as valid responses (do not throw) — covered by execute_request_captures_5xx_as_response; only network failure and abort throw RequestExecutionError; abort-vs-network is disambiguated via controller.signal.aborted producing a 'timeout:' vs 'request failed:' reason."
+  - "Timeout is implemented properly with AbortController + setTimeout cleared in finally (no timer leak); default 30s, injectable."
+  - "Multi-valued headers handled (EC-3): captureHeaders uses Headers.getSetCookie() to preserve repeated Set-Cookie values that the default Headers iteration would have folded — a genuine HTTP-correctness nuance, correctly addressed and tested."
+  - "GET/HEAD body suppression (EC-2) is correct: BODILESS_METHODS guards against fetch throwing on a body with GET/HEAD, and the captured request.body reflects what was ACTUALLY sent (not the discarded input) — honest capture."
+  - "Run envelope is versioned (schemaVersion literal 1) and N-step from M0 (ADR D3); loadRun validates with zod at the read boundary (fail-loud on corrupt file) — boundary validation per architecture.md §2."
+  - "Web routing returns correct codes for the cases it covers: 200 (render), 302 (/ -> latest), 400 (bad id / path-traversal, EC-1), 404 (missing run via ENOENT, and unknown path), 500 (fail-loud on unexpected errors with a short message, no stack leak). renderRun escapes all dynamic content (anti-XSS) and negotiates text-vs-binary via content-type."
+
+summary_counts:
+  BLOCKER: 0
+  HIGH: 1
+  MEDIUM: 1
+  LOW: 3

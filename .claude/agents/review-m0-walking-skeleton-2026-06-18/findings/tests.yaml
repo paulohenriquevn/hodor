@@ -1,0 +1,203 @@
+agent: review-m0-walking-skeleton-tests
+review_target: main..HEAD for plan m0-walking-skeleton
+plan: .claude/knowledge-base/plans/m0-walking-skeleton-plan.md
+suite_status: GREEN (25 passed / 25, 7 files, ~411ms via `npx vitest run`)
+
+test_pyramid:
+  unit_added: 17       # runSchema(3) + executeRequest(7) + runStore(4) + render(4) — minus 1 (web/server is integration)
+  integration_added: 7 # mcp/server.test(3) + web/server.test(3) + reclassify executeRequest as boundary tests
+  e2e_added: 1         # e2e.test.ts
+  total: 25
+  pyramid_shape: HEALTHY  # broad unit base, moderate integration, single E2E — matches testing.md §2
+
+edge_cases_from_plan:
+  covered:
+    - "5xx capturado como resposta (Failure scenario #1)"            # executeRequest.test.ts:41
+    - "connection refused lança RequestExecutionError (Failure #2)"  # executeRequest.test.ts:51
+    - "timeout lança RequestExecutionError (Failure #3)"             # executeRequest.test.ts:74
+    - "[EC-2] GET com body não vaza TypeError"                       # executeRequest.test.ts:65
+    - "[EC-3] Set-Cookie repetido preservado"                        # executeRequest.test.ts:84
+    - "[EC-1] path-traversal id → 400"                               # web/server.test.ts:45
+    - "schema rejeita versão errada / steps vazio"                   # runSchema.test.ts:32,37
+    - "loadRun rejeita arquivo inválido"                             # runStore.test.ts:58
+    - "render escapa HTML no body (anti-XSS)"                        # render.test.ts:38
+    - "render itera N steps"                                         # render.test.ts:56
+    - "404 para run ausente (uuid válido)"                           # web/server.test.ts:38
+    - "/ vazio → 'no runs yet'"                                      # web/server.test.ts:54
+  missing:
+    - "render de corpo binário/não-texto → '(binary omitted)' (Drawback declarado D4 + render.ts:29 branch)"
+    - "GET / com runs existentes → 302 redirect ao mais recente (Q2 resolution / server.ts:66-69 branch)"
+    - "buildRunEnvelope rejeita lista de steps vazia (D3 invariant 'steps ≥ 1' não exercitado no construtor)"
+    - "render de body vazio → '(empty body)' (render.ts:28 branch)"
+    - "executeRequest com opts.now injetado (clock determinístico declarado D4 nunca testado)"
+
+findings:
+  - id: F-tests-1
+    severity: HIGH
+    file: src/web/server.test.ts
+    line: 37
+    plan_ref: "T3.2 Deep Dives — Rotas: `GET /` → mais recente por mtime → 302; Q2 resolution"
+    summary: >-
+      O ramo mais importante do web server (GET / com runs presentes → 302 para o run mais
+      recente) não tem teste. Só o caso vazio ("no runs yet") é coberto. Toda a função
+      latestRunId() (server.ts:17-33, leitura de diretório + ordenação por mtime) está sem
+      cobertura comportamental — é I/O não-trivial (readdir + stat + filtro .json + escolha do mtime
+      máximo) que pode quebrar silenciosamente (ex.: empate de mtime, arquivos não-.json).
+    evidence: |
+      grep "302\|latestRunId\|redirect\|location" src/web/server.test.ts -> 0 matches
+      server.ts:66-69 e latestRunId() (17-33) só são exercitados pelo branch vazio.
+      O E2E acessa /runs/:id diretamente, nunca GET /.
+    recommended_action: >-
+      Adicionar teste de integração "web_server_root_redirects_to_latest_run": persistir 2 runs com
+      mtimes distintos, GET / com redirect manual desabilitado, assert status 302 e location ==
+      /runs/<id-mais-recente>.
+
+  - id: F-tests-2
+    severity: MEDIUM
+    file: src/web/render.test.ts
+    line: 23
+    plan_ref: "T3.1 Deep Dives — 'body não-texto → (binary omitted)'; Drawback D4 (corpos binários)"
+    summary: >-
+      A heurística binary-omitted (render.ts:27-33, branch content-type não-textual) é um Drawback
+      explicitamente declarado no plano e implementada, mas NENHUM teste a exercita. Idem o branch
+      "(empty body)". Render testa apenas content-types textuais (json/html). Um bug na regex TEXTUAL
+      passaria despercebido — exatamente o tipo de defeito que testing.md §6 ("testar só o happy path")
+      proíbe.
+    evidence: |
+      grep "binary omitted\|empty body\|octet-stream\|image/" src/web/render.test.ts -> 0 matches
+      render.ts:9 TEXTUAL regex e :29 branch sem cobertura.
+    recommended_action: >-
+      Adicionar "render_run_omits_binary_body": step com response content-type image/png e body não
+      vazio → HTML contém "(binary omitted" e NÃO contém o body cru. Opcional: caso body vazio →
+      "(empty body)".
+
+  - id: F-tests-3
+    severity: MEDIUM
+    file: src/core/runStore.test.ts
+    line: 29
+    plan_ref: "T1.1 Deep Dives — Invariant: steps tem ≥1 item; D3 envelope N-step"
+    summary: >-
+      O invariante de domínio "envelope sempre tem ≥1 step" só é provado no nível do SCHEMA
+      (runSchema.test.ts:37, parse de steps:[]). O construtor buildRunEnvelope() — a porta de
+      entrada real usada por MCP e E2E — nunca é testado com lista vazia. Se buildRunEnvelope
+      aceitar [] e produzir um envelope que depois falha em loadRun, o erro surge tarde (na borda
+      de leitura) em vez de fail-fast na construção (Rule 8). Comportamento atual indefinido/sem
+      teste.
+    evidence: |
+      buildRunEnvelope é chamado em runStore.test.ts:31,43,52 sempre com [step] (1 item).
+      Nenhuma asserção sobre buildRunEnvelope([]).
+    recommended_action: >-
+      Decidir e testar o contrato: ou "build_run_envelope_rejects_empty_steps" (lança ao receber [])
+      — fail-fast na fronteira de construção — ou documentar que a validação fica só no schema.
+      Hoje o comportamento não está coberto.
+
+  - id: F-tests-4
+    severity: MEDIUM
+    file: src/core/executeRequest.test.ts
+    line: 58
+    plan_ref: "ADR D4 — injeção de clock+id; rules/testing.md §6 (determinismo)"
+    summary: >-
+      ExecuteOptions.now (clock injetável) foi adicionado a executeRequest (executeRequest.ts:16,32)
+      explicitamente "para testes determinísticos" (D4), mas nenhum teste injeta now. O teste de
+      timing (execute_request_records_nonnegative_duration) só assert >= 0 e typeof string — é uma
+      asserção fraca que passaria com qualquer relógio real. startedAt nunca é verificado contra um
+      valor determinístico. Resultado: o parâmetro de testabilidade existe mas está sem uso → é
+      essencialmente código não exercitado pela razão pela qual foi criado.
+    evidence: |
+      grep "now:" src/core/executeRequest.test.ts -> 0 matches (só runStore injeta now).
+      executeRequest.ts:16 ExecuteOptions.now nunca recebe valor injetado em teste.
+    recommended_action: >-
+      Adicionar "execute_request_uses_injected_clock_for_started_at": now: () => 0 → assert
+      step.response.timings.startedAt === '1970-01-01T00:00:00.000Z'. Torna a asserção de timing
+      comportamental, não tautológica.
+
+  - id: F-tests-5
+    severity: LOW
+    file: src/web/server.test.ts
+    line: 45
+    plan_ref: "T3.2 [EC-1] MUST-FIX — anti path-traversal"
+    summary: >-
+      O teste de path-traversal (web_server_rejects_path_traversal_id) tem uma asserção negativa
+      potencialmente vácua. fetch normaliza %2f no path antes de chegar ao server, e a allowlist
+      RUN_ID_RE rejeita com 400 retornando o corpo literal "bad id" — então o assert
+      not.toContain('"name": "hodor"') passaria mesmo se a defesa fosse removida (o corpo nunca
+      conteria package.json nesse caminho). A asserção real e forte é o status 400; a negativa dá
+      falsa sensação de cobrir leak de arquivo. Não testa o caso em que o id passa pela regex mas
+      ainda contém payload (a regex /^[0-9a-f-]{36}$/i já barra, mas o teste não prova ausência de
+      leak por uma rota alternativa, ex. id de 36 chars com '-' sequenciais).
+    evidence: |
+      package.json:2 contém literalmente '"name": "hodor"'; server.ts:75 rejeita ANTES de qualquer
+      readFile → corpo é "bad id"; a asserção negativa nunca poderia falhar via esse caminho.
+    recommended_action: >-
+      Manter o assert de status 400 (forte). Opcionalmente fortalecer com um id de 36 chars
+      hex-com-hífen contendo um caractere proibido para provar que a regex barra qualquer não-UUID,
+      e remover/anotar a asserção negativa como "defense-in-depth, não a asserção primária".
+
+  - id: F-tests-6
+    severity: LOW
+    file: src/mcp/server.test.ts
+    line: 82
+    plan_ref: "D5 — contador runCount / getRunCount (runtime metric)"
+    summary: >-
+      run_request_tool_increments_run_count usa estado global mutável compartilhado (runCount em
+      server.ts:13, módulo-singleton). O teste é robusto a ordenação porque captura before =
+      getRunCount() e assert before+1 — bom. Porém o contador é GLOBAL ao processo de teste: outros
+      arquivos (e2e.test.ts) também incrementam runCount. Não há corrida hoje (single-thread), mas
+      o design acopla a métrica a um singleton de módulo, frágil se vitest passar a paralelizar
+      arquivos no mesmo worker compartilhando o módulo. Não é bug atual; é um smell de
+      testabilidade/observabilidade (estado global em vez de injetado).
+    evidence: |
+      server.ts:13 `let runCount = 0;` é estado de módulo; e2e.test.ts:59 também dispara a tool,
+      incrementando o mesmo contador. O before/after delta mitiga, mas o acoplamento permanece.
+    recommended_action: >-
+      Aceitável para M0 (single-thread, before+1 delta). Anotar como dívida: futuramente o contador
+      deveria viver numa instância do server (injetável) e não num singleton de módulo, para a
+      métrica ser por-server e os testes independentes do estado global.
+
+  - id: F-tests-7
+    severity: INFO
+    file: src/web/render.test.ts
+    line: 56
+    plan_ref: "T3.1 RED — render_run_iterates_multiple_steps"
+    summary: >-
+      render_run_iterates_multiple_steps assert via contagem de ocorrências da string "Step "
+      (html.split('Step ').length - 1 >= 2). É um proxy estrutural frágil — depende do literal
+      "Step " no markup (render.ts:54). Se o heading mudar para "Etapa"/"#1", o teste quebra sem que
+      o comportamento (renderizar 2 steps distintos) tenha regredido. testing.md §6 desencoraja
+      asserções sobre estrutura interna. O comportamento desejado seria "ambos os steps com seus
+      dados distintos aparecem".
+    evidence: |
+      render.test.ts:59 `html.split("Step ")` acopla o teste ao texto do <h2>.
+    recommended_action: >-
+      Tornar comportamental: usar 2 steps com URLs/status DISTINTOS e assert que ambos os valores
+      distintos aparecem no HTML (em vez de contar a palavra "Step").
+
+  - id: F-tests-8
+    severity: INFO
+    file: src/mcp/server.test.ts
+    line: 54
+    plan_ref: "T2.1 Acceptance — 'stdout não recebe logs'"
+    summary: >-
+      O critério de aceitação "stdout não recebe logs (protocolo via InMemoryTransport funciona)"
+      é validado apenas IMPLICITAMENTE (se houvesse log em stdout, o protocolo InMemory quebraria).
+      Não há asserção explícita de que console.error (stderr) é usado e console.log (stdout) não.
+      Para o M0 é aceitável (o plano declara a asserção como implícita), mas um spy em console.log
+      tornaria o invariante D5 ("stdout exclusivo do protocolo") explícito e à prova de regressão.
+    evidence: |
+      Nenhum vi.spyOn(console, ...) nos testes; o invariante D5 depende de inspeção manual.
+    recommended_action: >-
+      Opcional: spy em console.log durante callTool e assert toHaveBeenCalledTimes(0) (stdout limpo),
+      tornando explícito o invariante de transporte stdio.
+
+format_notes:
+  aaa_given_when_then: >-
+    Formato AAA respeitado na maioria (arrange via listen()/tmp()/connectedClient, act = chamada,
+    assert separado). Test names descrevem comportamento (snake_case behavioral) — bom, sem "and".
+  fixtures_cleanup: >-
+    EXCELENTE higiene de fixtures: todos os http.Server fecham em afterEach; tmpdirs criados com
+    mkdtemp e removidos com rm(recursive,force); HODOR_RUNS_DIR setado/deletado por teste; clients
+    MCP fechados (client.close()). Sem vazamento de socket/tmpdir observado. Determinismo: clock/id
+    injetados em runStore; porta 0 (efêmera) evita colisão; timeout do teste de timeout é curto (50ms).
+  determinism: >-
+    Sem random/Date.now em asserções (timings só assert >= 0). Único acoplamento a tempo real é o
+    teste de duration (fraco mas não-flaky). Sem sleeps arbitrários.

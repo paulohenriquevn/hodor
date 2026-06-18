@@ -21,7 +21,11 @@ async function latestRunId(dir: string): Promise<string | null> {
   } catch {
     return null;
   }
-  const jsons = entries.filter((e) => e.endsWith(".json"));
+  // F-dom-4: só considera arquivos cujo stem tem forma de run id (UUID) — evita
+  // redirecionar `/` para um id que o GET /runs/:id depois rejeitaria (400).
+  const jsons = entries.filter(
+    (e) => e.endsWith(".json") && RUN_ID_RE.test(e.slice(0, -".json".length)),
+  );
   let newest: { id: string; mtimeMs: number } | null = null;
   for (const file of jsons) {
     const s = await stat(join(dir, file));
@@ -35,9 +39,10 @@ async function latestRunId(dir: string): Promise<string | null> {
 export function buildWebServer(dir: string = defaultRunsDir()): Server {
   return createServer((req, res) => {
     void handle(req.method ?? "GET", req.url ?? "/", dir)
-      .then(({ status, contentType, body, location }) => {
+      .then(({ status, contentType, body, location, allow }) => {
         const headers: Record<string, string> = { "content-type": contentType };
         if (location) headers["location"] = location;
+        if (allow) headers["allow"] = allow; // F-dom-2: RFC 9110 §15.5.6 (405 MUST)
         res.writeHead(status, headers);
         res.end(body);
       })
@@ -54,11 +59,12 @@ interface Reply {
   contentType: string;
   body: string;
   location?: string;
+  allow?: string;
 }
 
 async function handle(method: string, url: string, dir: string): Promise<Reply> {
   if (method !== "GET") {
-    return { status: 405, contentType: "text/plain", body: "method not allowed" };
+    return { status: 405, contentType: "text/plain", body: "method not allowed", allow: "GET" };
   }
 
   const path = url.split("?")[0] ?? "/";

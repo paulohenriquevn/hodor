@@ -1,0 +1,207 @@
+agent: review-m0-walking-skeleton-cross-validation
+review_target: full history (no main branch — develop only) for plan m0-walking-skeleton
+plan: .claude/knowledge-base/plans/m0-walking-skeleton-plan.md
+reviewed_at: 2026-06-18
+
+# ------------------------------------------------------------------
+# Verification environment (re-run by this agent, not trusted from logs)
+# ------------------------------------------------------------------
+verification:
+  npm_test: "25 passed (7 files) — vitest run"
+  npm_run_typecheck: "tsc --noEmit — 0 errors"
+  coverage: "All files 98.3% stmts / 94.59% branch / 100% funcs; core 100% lines"
+  npm_audit: "found 0 vulnerabilities"
+  sdk_version_installed: "1.29.0 (v1.x stable — NOT 2.0.0-alpha; D1 respected)"
+  file_size_budget: "max 105 LoC (src/web/server.ts) — all <= 500 (PASS)"
+  dip_boundary: "core does NOT import mcp/web; no mcp<->web cross-import; adapters import only core/index (PASS)"
+  plan_drift: "plan committed d058e77 @15:21:10; first impl commit 93ff990 @15:29:15 — plan FROZEN before implement, no edits after"
+
+plan_tasks_summary:
+  total_tasks: 8        # T0.1, T1.1, T1.2, T1.3, T2.1, T3.1, T3.2, T4.1
+  fully_implemented: 8
+  partial: 0
+  missing: 0
+  diverged: 0
+
+acceptance_criteria_summary:
+  total: 35
+  satisfied: 35
+  unverified: 0
+  false_claims: 0
+  note: >
+    All Acceptance Criteria checkboxes in the plan are left UNCHECKED ([ ]) but
+    every criterion is OBSERVABLY satisfied in code + tests (re-run by this agent).
+    Per anti-pattern #4 this is a documentation omission, not a false claim — flagged
+    LOW (F-xval-3), not BLOCKER, because the underlying criteria are genuinely met.
+
+adr_compliance:
+  total_adrs: 5
+  respected: 5
+  diverged_without_new_adr: 0
+  detail:
+    D1: "SDK v1.x stable — installed 1.29.0; imports /server/mcp.js + /server/stdio.js; InMemoryTransport/Client in tests. RESPECTED."
+    D2: "core/index.ts is sole public surface; core imports nothing from mcp/web/sdk; adapters depend on core only. RESPECTED (grep-verified)."
+    D3: "envelope {schemaVersion:1, runId, createdAt, steps[]} with steps.min(1); render iterates steps; multi-step test present. RESPECTED."
+    D4: "native fetch + AbortController(30s default); native http; injected now()/newId() for determinism; deps = sdk+zod only. RESPECTED."
+    D5: "console.error (stderr) only; structured log {event,status,durationMs,path}; runCount + getRunCount(). RESPECTED."
+
+coverage_matrix_resolution:
+  total_gaps: 7
+  resolved: 7
+  detail:
+    gap_1: "FULLY — run_request tool (src/mcp/server.ts) delegates to executeRequest; returns structuredContent=envelope. Test run_request_tool_executes_and_returns_envelope."
+    gap_2: "FULLY — persistRun writes runs/{runId}.json (src/core/runStore.ts:35); test run_request_tool_persists_run_file + load_run_round_trips."
+    gap_3: "FULLY — loadRun + renderRun served by native http (src/web/server.ts, render.ts); request/response/headers rendered; tests render_run_* + web_server_*."
+    gap_4: "FULLY — e2e_run_request_persists_and_renders (src/e2e.test.ts) green; full loop agent->tool->file->web."
+    gap_5: "FULLY — N-step envelope steps[] (D3) from M0; RunStepSchema array; render_run_iterates_multiple_steps proves N-step."
+    gap_6: "FULLY — core/index.ts sole surface; mcp/web import only from it (grep CLEAN)."
+    gap_7: "FULLY — getRunCount() + structured stderr log; run_request_tool_increments_run_count asserts 0->1."
+
+goal_verification:
+  goal: "e2e_run_request_persists_and_renders verde (loop agent->execução->arquivo->render)"
+  status: VERIFIED_REAL
+  evidence: >
+    Re-ran `npm test`: src/e2e.test.ts > "e2e_run_request_persists_and_renders" PASSES.
+    The test spins a real ephemeral http target, calls run_request via InMemoryTransport
+    (real MCP Client+Server), asserts structuredContent.steps[0].response.status===200,
+    re-loads the persisted file via loadRun, then starts a real buildWebServer, fetches
+    /runs/{id}, and asserts the rendered HTML contains both the status and the target url.
+    This is a genuine end-to-end loop, not a stub.
+
+# ==================================================================
+# Per-task traceability table (task -> commit(s) -> status)
+# ==================================================================
+task_table:
+  - task: T0.1
+    desc: "package.json + tsconfig + vitest + scripts"
+    commits: ["93ff990"]
+    files: [package.json, tsconfig.json, vitest.config.ts, .gitignore, package-lock.json]
+    status: FULLY
+  - task: T1.1
+    desc: "Schema do run + tipos (zod)"
+    commits: ["061638f"]
+    files: [src/core/runSchema.ts, src/core/runSchema.test.ts]
+    status: FULLY
+  - task: T1.2
+    desc: "executeRequest (fetch + captura + erro tipado)"
+    commits: ["061638f", "2a425c9"]   # 2a425c9 added the timeout RED test
+    files: [src/core/errors.ts, src/core/executeRequest.ts, src/core/executeRequest.test.ts]
+    status: FULLY
+  - task: T1.3
+    desc: "runStore (buildRunEnvelope + persistRun + loadRun) + index"
+    commits: ["061638f"]
+    files: [src/core/runStore.ts, src/core/index.ts, src/core/runStore.test.ts]
+    status: FULLY
+  - task: T2.1
+    desc: "MCP server + tool run_request + métrica"
+    commits: ["e96e789"]
+    files: [src/mcp/server.ts, src/mcp/server.test.ts]
+    status: FULLY
+  - task: T3.1
+    desc: "renderRun (run -> HTML, puro)"
+    commits: ["8038343"]
+    files: [src/web/render.ts, src/web/render.test.ts]
+    status: FULLY
+  - task: T3.2
+    desc: "web server (http nativo) + EC-1 path-traversal guard"
+    commits: ["8038343"]
+    files: [src/web/server.ts, src/web/server.test.ts]
+    status: FULLY
+  - task: T4.1
+    desc: "E2E loop completo + README + CHANGELOG"
+    commits: ["2a425c9"]
+    files: [src/e2e.test.ts, README.md, CHANGELOG.md]
+    status: FULLY
+
+plan_drift:
+  plan_edited_after_implement: false
+  details: >
+    Plan committed at d058e77 (2026-06-18 15:21:10). First implementation commit
+    93ff990 at 15:29:15 — 8 minutes later. `git log --follow` on the plan file shows
+    a SINGLE commit (no edits after implement began). Plan is the frozen ground truth;
+    this review is reliable.
+
+findings:
+  - id: F-xval-1
+    severity: LOW
+    file: src/web/server.test.ts
+    line: 1
+    plan_ref: "T3.2 Files to edit (declared only src/web/server.ts + render.test.ts unchanged)"
+    summary: >
+      Undeclared file added — src/web/server.test.ts. The plan's T3.2 'Files to edit'
+      declared the web-server test would live in the E2E/T4.1, not a dedicated unit file.
+    evidence: |
+      Plan T3.2 Files to edit lists: "src/web/server.ts (NEW)" and
+      "src/web/render.test.ts — (sem mudança; teste do server vai no e2e/integração T4.1)".
+      Implementation added src/web/server.test.ts (404, path-traversal, empty-root tests).
+      This is BENEFICIAL scope (covers EC-1 + 404 + empty-root at unit level instead of only E2E)
+      but technically an undeclared file (anti-pattern #3 — minor scope creep without ADR note).
+    recommended_action: >
+      Accept as a positive deviation. Optionally add a one-line note in the implementation
+      summary acknowledging the extra unit-test file. No code change required.
+
+  - id: F-xval-2
+    severity: LOW
+    file: src/core/executeRequest.test.ts
+    line: 74
+    plan_ref: "T1.2 TDD RED list (6 named tests) + Failure scenarios row 3 (timeout)"
+    summary: >
+      Test name divergence — plan listed RED test 'execute_request_get_with_body_is_handled'
+      among the 6 T1.2 tests; the implemented suite has 7 tests, replacing the implicit
+      timeout coverage with an explicit 'execute_request_throws_typed_error_on_timeout'
+      (committed later in 2a425c9, not the T1.2 commit 061638f).
+    evidence: |
+      Plan T1.2 TDD names 6 RED tests; Failure scenarios table row 3 requires a timeout test.
+      executeRequest.test.ts has 7 tests incl. execute_request_throws_typed_error_on_timeout
+      (added in commit 2a425c9, the T4.1 commit, not the T1.2 core commit).
+      All 6 plan-named tests ARE present; the timeout test (mandated by Failure scenarios)
+      was added in a later commit rather than with T1.2.
+    recommended_action: >
+      Accept — the Failure-scenarios timeout requirement is satisfied; only the commit
+      grouping diverged (timeout test landed with E2E commit). No fix needed; note in summary.
+
+  - id: F-xval-3
+    severity: LOW
+    file: .claude/knowledge-base/plans/m0-walking-skeleton-plan.md
+    line: 243
+    plan_ref: "All tasks — Acceptance Criteria & DoD checkboxes"
+    summary: >
+      Every Acceptance Criteria and DoD checkbox in the plan remains UNCHECKED ([ ])
+      despite all criteria being observably satisfied (tests green, typecheck clean,
+      coverage >=90% core, 0 audit vulns, all files <=500 LoC).
+    evidence: |
+      Re-ran npm test (25/25 pass), npm run typecheck (0 errors), npx vitest run --coverage
+      (core 100%, all files 98.3%), npm audit (0 vulns), wc -l (max 105). Every criterion
+      is met, but the plan document's checkboxes were never ticked. Per anti-pattern #4,
+      verified -> documentation omission, not a false 'done' claim.
+    recommended_action: >
+      Tick the satisfied checkboxes (or note in the implementation summary that they are
+      verified-but-unticked). Cosmetic; does not block merge.
+
+  - id: F-xval-4
+    severity: INFO
+    file: src/core/executeRequest.ts
+    line: 84
+    plan_ref: "T1.2 Deep Dives — headers via Object.fromEntries(res.headers)"
+    summary: >
+      Positive: EC-3 (repeated Set-Cookie) handled MORE robustly than the plan's
+      pseudo-code, using Headers.getSetCookie() instead of relying on the default
+      ', ' join, which Node's Headers does NOT apply to set-cookie.
+    evidence: |
+      Plan pseudo-code: headers: fromEntries(res.headers). Implementation adds
+      captureHeaders() that calls headers.getSetCookie?.() and re-joins. Test
+      execute_request_captures_repeated_headers passes (both a=1 and b=2 preserved).
+      This is a correctness improvement aligned with EC-3 intent, not a divergence.
+    recommended_action: "None — improvement consistent with the plan's EC-3 goal."
+
+verdict: FULLY_IMPLEMENTED
+verdict_rationale: >
+  All 8 tasks FULLY implemented and traceable to commits referencing their task IDs.
+  All 5 ADRs respected (grep + version verified). All 7 Coverage Matrix gaps resolved
+  in real code. The Goal metric (e2e_run_request_persists_and_renders) is verified
+  GREEN by re-running the suite — a genuine end-to-end loop, not a stub. Plan frozen
+  before implement (no drift). DIP boundary enforced (grep CLEAN). No BLOCKER or HIGH
+  findings. Only 3 LOW + 1 INFO findings, all cosmetic / positive deviations.
+
+blockers: []
+highs: []

@@ -1,0 +1,138 @@
+agent: review-m0-walking-skeleton-wiring
+review_target: develop (commits 061638f..78f7445) for plan m0-walking-skeleton
+plan: .claude/knowledge-base/plans/m0-walking-skeleton-plan.md
+date: 2026-06-18
+
+triad_revalidation:
+  total_new_symbols: 8   # executeRequest, buildRunEnvelope, persistRun, loadRun, renderRun, defaultRunsDir, getRunCount, buildServer/buildWebServer
+  pillar_a_honest_pass: 7 / 7   # every core export has a REAL (non-noop) production caller
+  pillar_b_honest_pass: 8 / 8   # every symbol is exercised (called in Act phase), not just imported
+  pillar_c_observed: 0 / 1      # getRunCount metric: incremented in prod, but NEVER read by a production caller; only asserted in a unit test; E2E never exercises it despite plan claiming it does
+
+per_symbol_wiring:
+  executeRequest:
+    pillar_a: PASS   # real caller src/mcp/server.ts:37 (tool handler, not a dead branch)
+    pillar_b: PASS   # executeRequest.test.ts (7 tests vs ephemeral http.Server) + e2e
+    pillar_c: PASS   # response.timings.durationMs captured + logged at server.ts:46
+  buildRunEnvelope:
+    pillar_a: PASS   # real caller src/mcp/server.ts:38
+    pillar_b: PASS   # runStore.test.ts (4) + e2e
+    pillar_c: n/a
+  persistRun:
+    pillar_a: PASS   # real caller src/mcp/server.ts:39
+    pillar_b: PASS   # runStore.test.ts + mcp/server.test.ts (file existence) + e2e
+    pillar_c: n/a
+  loadRun:
+    pillar_a: PASS   # real production caller src/web/server.ts:79 (web handler)
+    pillar_b: PASS   # runStore.test.ts + e2e fetch of rendered page
+    pillar_c: n/a
+  renderRun:
+    pillar_a: PASS   # real production caller src/web/server.ts:80
+    pillar_b: PASS   # render.test.ts (4) + e2e asserts HTML content
+    pillar_c: n/a
+  defaultRunsDir:
+    pillar_a: PASS   # caller src/web/server.ts:35 + runStore.ts:35 (persistRun default)
+    pillar_b: PASS   # exercised transitively by persist/web tests
+    pillar_c: n/a
+  getRunCount:
+    pillar_a: FAIL   # NO production caller — only src/mcp/server.test.ts reads it
+    pillar_b: PASS   # server.test.ts:84-87 (run_request_tool_increments_run_count)
+    pillar_c: FAIL   # metric is never observed in a production path nor in the E2E loop
+
+integration_with_existing_flows:
+  entrypoints:
+    - "src/mcp/server.ts main() — reachable via npm run mcp (package.json:15)"
+    - "src/web/server.ts main() — reachable via npm run web (package.json:16)"
+  e2e_loop: PASS   # src/e2e.test.ts wires agent(MCP InMemoryTransport) -> core -> file -> web fetch; 25/25 tests green
+  orphan_modules: none   # every new module has a reachable path from an entrypoint or the E2E
+
+boundary_respect_dip:
+  core_imports_adapters: false   # src/core has ZERO imports of mcp/web (only a doc comment mentions them) — D2 honored
+  mcp_imports_web: false
+  web_imports_mcp: false
+  verdict: PASS
+
+findings:
+  - id: F-wire-1
+    severity: HIGH
+    file: src/e2e.test.ts
+    line: 80
+    plan_ref: Global DoD § Runtime-metric proof + T4.1 wiring table ("exercita getRunCount no loop")
+    summary: >
+      The plan's Global DoD ("Runtime-metric proof — getRunCount() observado > 0 no teste
+      de integração") and the implementation's own wiring table (T4.1: "exercita getRunCount
+      no loop") claim the E2E loop exercises the runtime metric. It does not — src/e2e.test.ts
+      never references getRunCount. The metric is only asserted in the unit-level
+      server.test.ts. Pillar (c) "observed in a REAL workload" is therefore overstated for the
+      E2E; the E2E loop runs but never proves the counter incremented.
+    evidence: |
+      grep -n "getRunCount" src/e2e.test.ts  -> NOT referenced
+      grep -rn "runCount|getRunCount" src     -> only server.ts (increment) + server.test.ts (read)
+      Plan line 730: "Runtime-metric proof — getRunCount() observado > 0 no teste de integração T2.1"
+      Implementation table line 36: "T4.1 E2E ... exercita getRunCount no loop" (does not).
+    recommended_action: >
+      Either (a) add an assertion in e2e_run_request_persists_and_renders that getRunCount()
+      increased across the tool call (closes the gap and matches the plan claim), or (b) correct
+      the implementation summary to state the metric is proven at T2.1 (server.test.ts) only.
+      Option (a) is preferred — it makes the runtime-metric proof part of the E2E loop the plan
+      promised.
+
+  - id: F-wire-2
+    severity: MEDIUM
+    file: src/mcp/server.ts
+    line: 14
+    plan_ref: ADR D5 (runtime metric) + cycle-implement.md § Wiring triad pillar (c)
+    summary: >
+      getRunCount() is a public export with NO production caller — its only reader is a test
+      (server.test.ts). The runtime metric (the counter) is write-only in production: runCount++
+      runs in the handler but nothing in any production code path ever reads it back (no health
+      endpoint, no shutdown log, no /metrics). Per the wiring-reviewer contract this is a dead
+      public export ("internal != needed") and a thin pillar-(c): the metric exists to satisfy
+      the test, not to give ops visibility. The stderr structured log (server.ts:42-49) IS a
+      genuine observable runtime signal and largely covers ADR D5's intent, so this is MEDIUM
+      (not BLOCKER) — but the counter half of the metric is currently orphan.
+    evidence: |
+      src/mcp/server.ts:13  let runCount = 0;
+      src/mcp/server.ts:14  export function getRunCount(): number { return runCount; }
+      src/mcp/server.ts:40  runCount += 1;   # write
+      No production read: grep -rn "getRunCount" src -> only server.test.ts reads it.
+    recommended_action: >
+      Acceptable to keep for M0 since the stderr log already provides observability and M1+ will
+      consume the counter. To make pillar (c) honest now, either log getRunCount() in main()'s
+      stderr startup/per-run line so the counter has a production reader, or document explicitly
+      in the implementation summary that the counter is a test-only wiring proof pending a
+      production consumer in M1. Do not let it silently persist as a dead export.
+
+  - id: F-wire-3
+    severity: INFO
+    file: src/core/index.ts
+    line: 1
+    plan_ref: D2 fronteira DIP
+    summary: >
+      Positive finding: the DIP boundary is genuinely respected. src/core imports nothing from
+      mcp/web (only a documentation comment mentions them); both adapters import the core solely
+      via src/core/index.js; mcp and web do not import each other. All five core symbols
+      (executeRequest, buildRunEnvelope, persistRun, loadRun, renderRun) have real, functionally
+      necessary production callers wired into reachable entrypoints (npm run mcp / npm run web)
+      and the green E2E loop. No gaming, no no-op callers, no dead-branch callers detected.
+    evidence: |
+      grep -rn "mcp/|web/" src/core -> only index.ts comment line 4
+      executeRequest/buildRunEnvelope/persistRun -> src/mcp/server.ts:37-39 (live handler)
+      loadRun/renderRun -> src/web/server.ts:79-80 (live handler)
+      npx vitest run -> 7 files / 25 tests PASS
+    recommended_action: none — record as evidence of honest wiring.
+
+summary:
+  blockers: 0
+  high: 1
+  medium: 1
+  info: 1
+  verdict_input: >
+    No BLOCKER. The walking-skeleton wiring is fundamentally honest: every core export has a
+    real production caller, the DIP boundary holds, and the E2E loop is green end-to-end. The
+    single HIGH (F-wire-1) is a documentation/coverage gap — the plan claims the E2E exercises
+    the runtime metric but it does not — and the MEDIUM (F-wire-2) flags getRunCount as a
+    currently write-only / test-only metric. Both are fixable with a one-line E2E assertion plus
+    a production reader/log; neither blocks merge structurally, but F-wire-1 should be closed
+    before the milestone is marked done since it touches the plan's explicit Runtime-metric proof
+    DoD.

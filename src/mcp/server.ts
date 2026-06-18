@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { executeRequest, buildRunEnvelope, persistRun } from "../core/index.js";
+import { executeRequest, buildRunEnvelope, persistRun, RunEnvelopeSchema } from "../core/index.js";
 
 /**
  * Adaptador MCP (ADR D1/D2/D5). Expõe a tool `run_request` sobre stdio,
@@ -31,6 +31,9 @@ export function buildServer(): McpServer {
         headers: z.record(z.string()).optional(),
         body: z.string().optional(),
       },
+      // F-dom-1: declara o contrato do payload estruturado (RunEnvelope) — o SDK
+      // o publica em tools/list e valida structuredContent na fronteira MCP.
+      outputSchema: RunEnvelopeSchema.shape,
     },
     async ({ method, url, headers, body }) => {
       // Caller de produção do core (wiring triad pillar a).
