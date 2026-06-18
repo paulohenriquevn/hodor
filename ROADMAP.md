@@ -80,10 +80,12 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 **Definition of done (all must hold):**
 
-- [ ] MCP server em TS sobe via stdio e expõe uma tool `run_request` que aceita method/url/headers/body, executa a request e retorna request + response + headers capturados.
-- [ ] O resultado de uma execução é persistido em um arquivo (formato decidido aqui — JSON ou similar) sob um diretório de runs.
-- [ ] Uma web app mínima lê esse arquivo e renderiza request, response e headers completos de uma execução.
-- [ ] Demonstração E2E: agente chama `run_request` contra um endpoint real → resultado persistido → visível na web app.
+- [x] MCP server em TS sobe via stdio e expõe uma tool `run_request` que aceita method/url/headers/body, executa a request e retorna request + response + headers capturados.
+- [x] O resultado de uma execução é persistido em um arquivo (formato decidido aqui — JSON ou similar) sob um diretório de runs.
+- [x] Uma web app mínima lê esse arquivo e renderiza request, response e headers completos de uma execução.
+- [x] Demonstração E2E: agente chama `run_request` contra um endpoint real → resultado persistido → visível na web app.
+
+**Delivered:** v0.1.0 (PR #1, merge `4b7837a`, tag `v0.1.0`) em 2026-06-18. Formato de persistência decidido: **JSON** com envelope versionado `{schemaVersion:1, runId, createdAt, steps[]}` sob `runs/` (desenhado já para N steps — mitiga o risco #1). Core de execução/captura isolado dos adaptadores MCP/web via fronteira DIP (mitiga o risco #2). E2E demonstrado contra `https://example.com` via stdio real. Artefatos: `knowledge-base/plans/m0-walking-skeleton-plan.md`, `.../reviews/m0-walking-skeleton-review-2026-06-18.md` (READY_TO_MERGE), `.../releases/v0.1.0-release.md`, `.../roadmap-runs/M0-2026-06-18.md`.
 
 **Dependencies:** none (this is the foundation).
 
