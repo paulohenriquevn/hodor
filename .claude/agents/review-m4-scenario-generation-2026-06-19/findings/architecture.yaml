@@ -1,0 +1,207 @@
+agent: review-m4-scenario-generation-architecture
+review_target: origin/main..develop for plan m4-scenario-generation
+plan: .claude/knowledge-base/plans/m4-scenario-generation-plan.md
+summary_counts:
+  BLOCKER: 0
+  HIGH: 0
+  MEDIUM: 2
+  LOW: 2
+  INFO: 5
+findings:
+  # ---------- DIP / boundary ----------
+  - id: F-arch-1
+    severity: INFO
+    file: src/core/index.ts
+    line: 44
+    plan_ref: "Architecture boundaries affected; Global DoD (DIP preservado)"
+    summary: DIP boundary clean — core has zero imports from web/mcp; adapters import only core/index.js.
+    evidence: |
+      `grep -rn 'from "../web"\|from "../mcp"' src/core/` → empty.
+      New core modules (provenance.ts, draftStore.ts) import only zod + node stdlib + sibling
+      core modules (scenarioSchema, provenance, stableStringify). mcp/server.ts and
+      web/server.ts import M4 symbols exclusively from "../core/index.js".
+    recommended_action: None. Boundary respected exactly as the plan declared.
+
+  - id: F-arch-2
+    severity: INFO
+    file: package.json
+    line: 0
+    plan_ref: "Global DoD (ZERO dep nova); D1 (shell-quote deferred)"
+    summary: Zero new dependency — `git diff origin/main -- package.json` is empty, honoring the parsimony-driven D1 defer of the curl parser.
+    evidence: |
+      `git diff origin/main -- package.json` produced no output.
+      draftStore.ts uses node:crypto/randomUUID + node:fs/promises (stdlib, parsimony rung 2),
+      not shell-quote. saveDraft reuses ScenarioSchema, ProvenanceSchema, stableStringify (rung 4).
+    recommended_action: None. Rule 9 / parsimony ladder respected.
+
+  # ---------- SRP: provenance SoT ----------
+  - id: F-arch-3
+    severity: INFO
+    file: src/core/provenance.ts
+    line: 12
+    plan_ref: "T1.1; ADR D2 (SoT único, DRY)"
+    summary: ProvenanceSchema is a single-responsibility SoT — pure schema, no approval state, referenced (not duplicated) by Scenario, RunEnvelope, ReviewArtifact.
+    evidence: |
+      provenance.ts is 19 LoC, one zod object, one inferred type, no I/O, no approval field.
+      scenarioSchema.ts / runSchema.ts / reviewArtifact.ts each `import { ProvenanceSchema }`
+      and reference it as `.optional()` — the concept lives in exactly one place (DRY, D2 honored).
+      No `origin` literal duplicated anywhere else.
+    recommended_action: None. Module cohesion (architecture.md §3) satisfied.
+
+  # ---------- D2: additive / reuse-without-refactor ----------
+  - id: F-arch-4
+    severity: INFO
+    file: src/core/runStore.ts
+    line: 28
+    plan_ref: "T1.2; ADR D2; Baseline (buildRunEnvelope param aditivo)"
+    summary: buildRunEnvelope extended with a trailing optional `provenance?` param — both existing callers (run_request without it, runScenario with it) preserved without refactor.
+    evidence: |
+      ```ts
+      export function buildRunEnvelope(steps, deps = {}, name?, provenance?) { ...
+        ...(provenance !== undefined ? { provenance } : {}),
+      ```
+      run_request path (mcp/server.ts) calls without the 4th arg → no provenance key emitted,
+      preserving M0-M3 envelope shape. All schemas added `provenance` as `.optional()`;
+      `schemaVersion`/`artifactVersion` stay literal(1). Backward-compat is structural, not just claimed.
+    recommended_action: None. Open/Closed via additive optional fields — correct.
+
+  # ---------- DraftSchema cohesion ----------
+  - id: F-arch-5
+    severity: INFO
+    file: src/core/draftStore.ts
+    line: 18
+    plan_ref: "T1.3; ADR D4; 'Avalie se DraftSchema = ScenarioSchema.extend({provenance}) é coeso'"
+    summary: DraftSchema = ScenarioSchema.extend({ provenance }) is a coherent specialization — a Draft IS a Scenario whose provenance is mandatory, not a new parallel concept.
+    evidence: |
+      ```ts
+      export const DraftSchema = ScenarioSchema.extend({ provenance: ProvenanceSchema });
+      ```
+      `.extend` tightens the optional `provenance?` (Scenario) to required (Draft) without
+      restating any field — DRY. Semantically faithful to the glossary ("a draft is generated
+      or authored, so origin always exists"). No LSP hazard: a Draft validates anywhere a
+      Scenario is accepted (it is a stricter superset), so `run_scenario` / `runScenario`
+      still accept it. Coupling Scenario→Draft is intrinsic and acceptable.
+    recommended_action: None. Cohesive and the correct use of zod schema composition.
+
+  # ---------- Propagation chain coupling ----------
+  - id: F-arch-6
+    severity: INFO
+    file: src/core/runScenario.ts
+    line: 44
+    plan_ref: "T1.2/T4.1; DoD #2; 'Avalie a propagação Scenario→Run→Review'"
+    summary: Scenario→Run→Review provenance propagation is a thin, one-directional data flow — acceptable coupling, no new control dependency.
+    evidence: |
+      runScenario passes `scenario.provenance` to buildRunEnvelope; buildReviewArtifact copies
+      `env.provenance` to the artifact. Each hop only forwards an optional value; no module
+      gained behavior branching on provenance (the only branch is the web badge, which is a
+      presentation concern in the adapter). normalizeRun does NOT touch provenance —
+      buildReviewArtifact pulls it straight from `env`, which is consistent because provenance
+      carries no volatile/normalizable data (it is origin metadata, not request/response bytes).
+    recommended_action: None. Propagation is the minimal spine the plan promised (D2).
+
+  # ---------- D3: no duplicated approval state ----------
+  - id: F-arch-7
+    severity: INFO
+    file: src/core/draftStore.ts
+    line: 18
+    plan_ref: "ADR D3 (aprovação não duplicada no draft); Risco #1"
+    summary: No approval/state field in Draft, Provenance, or RunEnvelope — "pending" stays a derived state (absence of reviews/{id}.json), preserving a single source of truth.
+    evidence: |
+      DraftSchema = Scenario + provenance only; ProvenanceSchema has no `approved`/`status`.
+      draftStore never writes to reviews/ and never imports verdict/reviewArtifact write paths.
+      The MCP tool delegates to saveDraft and explicitly does not execute or approve. The only
+      approval path remains POST /verdict → reviews/. D3 / SRP honored by design.
+    recommended_action: None.
+
+  # ---------- MEDIUM: provenance not normalized but is content-bearing for diffs ----------
+  - id: F-arch-8
+    severity: MEDIUM
+    file: src/core/reviewArtifact.ts
+    line: 56
+    plan_ref: "T1.2 (buildReviewArtifact carries env.provenance); M3 stableStringify diff invariant"
+    summary: provenance.generatedAt is a wall-clock timestamp copied verbatim into the committable review artifact, which can make versionable diffs non-deterministic across re-runs of the same scenario.
+    evidence: |
+      ```ts
+      ...(env.provenance !== undefined ? { provenance: env.provenance } : {}),
+      ```
+      M3's whole point (normalizeRun + stableStringify) is a stable, diffable committed artifact.
+      `generatedAt` is free-form `z.string()` set by the agent/source; two reviews of the same
+      logical draft will carry different `generatedAt`, perturbing the committed reviews/{id}.json
+      diff. This is a softer cousin of the volatile-header normalization M3 already does for runs.
+      It is not a correctness BLOCKER (the field genuinely describes draft origin), but it leaks a
+      volatile value into the SoT artifact the human reviews in git.
+    recommended_action: |
+      Document the intent explicitly (provenance.generatedAt describes the DRAFT creation instant,
+      not the run instant, so it is stable per draft) OR, if a draft can be re-run, confirm the run
+      re-uses the draft's original generatedAt rather than re-stamping. A one-line ADR note or a test
+      asserting "same draft → same generatedAt in artifact across two runs" would close the ambiguity.
+
+  # ---------- MEDIUM: provenance.sourceRef unbounded length, persisted + rendered ----------
+  - id: F-arch-9
+    severity: MEDIUM
+    file: src/core/provenance.ts
+    line: 15
+    plan_ref: "Risco #2 (sourceKind curl/traffic); render escapes sourceRef"
+    summary: provenance.sourceRef is an unbounded z.string() (intended to hold a full curl/traffic example) persisted into committable drafts and reviews and rendered in HTML — no max length or shape constraint at the trust boundary.
+    evidence: |
+      ```ts
+      sourceRef: z.string().optional(),
+      ```
+      The plan envisions sourceRef holding "curl ..." commands or traffic samples (risk #2).
+      It is validated for XSS at render (escapeHtml in render.ts provenanceBadge — good) but has
+      no `.max()` bound, so a multi-KB sourceRef bloats every committed artifact and the listing/run
+      HTML. architecture.md §boundary: validate inputs at the boundary; size is part of validity.
+    recommended_action: |
+      Add a reasonable `.max(N)` (e.g. 4096) to ProvenanceSchema.sourceRef so the trust boundary
+      bounds the persisted/rendered payload. Low-risk additive constraint; keep optional.
+
+  # ---------- LOW: render.ts function length / nesting drift ----------
+  - id: F-arch-10
+    severity: LOW
+    file: src/web/render.ts
+    line: 148
+    plan_ref: "T3.1; architecture.md §3 (cohesion)"
+    summary: provenanceBadge is a well-isolated presentation helper (good SRP), but the inline ternary building `src` is dense and duplicates the sourceKind-escape branch.
+    evidence: |
+      ```ts
+      const src = prov.sourceRef
+        ? ` ...(${escapeHtml(prov.sourceKind)}: ${escapeHtml(prov.sourceRef)})...`
+        : ` ...(${escapeHtml(prov.sourceKind)})...`;
+      ```
+      `escapeHtml(prov.sourceKind)` is computed in both branches; readability suffers slightly.
+      Not a boundary/DIP issue — purely local clarity (KISS).
+    recommended_action: |
+      Optional: hoist `const kind = escapeHtml(prov.sourceKind)` and append the ref segment
+      conditionally. Cosmetic; no behavior change.
+
+  # ---------- LOW: web listing carries presentation-shaped field name ----------
+  - id: F-arch-11
+    severity: LOW
+    file: src/web/server.ts
+    line: 239
+    plan_ref: "T3.1; DoD #2"
+    summary: listRuns maps the full provenance object down to a single `origin` field for the ListingItem — sound (ISP: the listing only needs origin), worth noting that sourceKind/sourceRef are intentionally dropped from the listing view.
+    evidence: |
+      ```ts
+      origin: env.provenance?.origin,
+      ```
+      The listing badge shows only "gerado · pendente"; the detailed run view (renderRun)
+      shows sourceKind/sourceRef. This is a deliberate ISP-friendly projection — the listing
+      consumer does not depend on fields it does not render.
+    recommended_action: None required; confirm the listing intentionally omits sourceKind (it does).
+
+  # ---------- INFO: MCP tool delegation ----------
+  - id: F-arch-12
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 105
+    plan_ref: "T2.1; ADR D1 (tool não embute LLM; delega 100% ao core)"
+    summary: save_scenario_draft tool is a thin adapter — validates at the MCP boundary (ScenarioSchema.shape + provenance) and delegates persistence to core saveDraft; no LLM call, no sampling round-trip, no execution.
+    evidence: |
+      ```ts
+      inputSchema: { ...ScenarioSchema.shape, provenance: ProvenanceSchema },
+      async (scenario) => { const { draftId, path } = await saveDraft(scenario); ... }
+      ```
+      provenance is required at the tool boundary (matches DraftSchema), metric in stderr
+      (wiring pillar c), no reviews/ write. D1 honored — generation stays in the agent's reasoning.
+    recommended_action: None.

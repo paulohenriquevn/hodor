@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProvenanceSchema } from "./provenance.js";
 
 /**
  * Schema do artefato de run do Hodor.
@@ -55,6 +56,9 @@ export const RunEnvelopeSchema = z.object({
   // M2 (ADR D4): nome do cenário, OPCIONAL e aditivo — runs do M0/run_request
   // (sem cenário) seguem válidos; usado para rotular a listagem de review.
   name: z.string().optional(),
+  // M4 (ADR D2): proveniência OPCIONAL e aditiva — propagada do cenário gerado;
+  // runs M0-M3 (sem ela) seguem válidos. A UI marca "gerado pelo agente · pendente".
+  provenance: ProvenanceSchema.optional(),
   steps: z.array(RunStepSchema).min(1),
 });
 

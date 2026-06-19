@@ -41,5 +41,6 @@ export async function runScenario(
     steps.push({ ...runStep, asserts, captures });
   }
 
-  return buildRunEnvelope(steps, deps, scenario.name);
+  // M4 (D2): propaga a proveniência do cenário ao envelope (gerado → pendente).
+  return buildRunEnvelope(steps, deps, scenario.name, scenario.provenance);
 }

@@ -1,0 +1,164 @@
+agent: review-m4-scenario-generation-tests
+review_target: main..HEAD for plan m4-scenario-generation
+plan: .claude/knowledge-base/plans/m4-scenario-generation-plan.md
+verdict_summary: >
+  Suite is green (144/144), deterministic, fast (2.5s), no .only/.skip/xit leaks,
+  good edge-case depth on draftStore (EC-1, EC-3, path-traversal, corrupt-file, round-trip),
+  honest InMemoryTransport MCP test (real client→server→core path, not a stub), and a
+  genuine end-to-end "never auto-approves" proof. ONE HIGH: a real plan-vs-implementation
+  divergence on EC-2 — the plan v1.1 absorbed EC-2 as a MUST-FIX requiring url validation
+  at the draft boundary; the shipped code defers ALL url validation and there is no test
+  proving the claimed run-time safety net catches a plainly-invalid (non-templated) url.
+
+test_pyramid:
+  unit_added: 26        # provenance(4) + propagation(5) + draftStore(11) + mcp draft(4) + render M4(7) minus overlap
+  integration_added: 0  # no tests/integration/ tree exists; boundaries exercised via in-process http + InMemoryTransport
+  e2e_added: 1          # src/m4-e2e.test.ts
+  total_suite: 144
+  note: >
+    Project has no tests/integration/ or tests/e2e/ mirror tree (testing.md §5 default
+    same-dir *.test.ts convention is used). "Integration-ish" coverage is achieved with
+    real node:http servers + real fs tmpdirs + InMemoryTransport, which is acceptable for
+    this stack (no DB/pgvector in this repo — the tests.md template references pgvector,
+    which does NOT apply to Hodor). Pyramid is healthy: many unit, one E2E, none inverted.
+
+edge_cases_from_plan:
+  covered:
+    - "EC-1 draftId default randomUUID when omitted (save_draft_generates_safe_id_when_omitted)"
+    - "EC-1 no silent overwrite of existing id (save_draft_does_not_silently_overwrite_existing_id)"
+    - "EC-3 listDrafts on absent dir returns [] not throw (list_drafts_returns_empty_when_dir_absent)"
+    - "path-traversal id rejected (save_draft_rejects_path_traversal_id)"
+    - "corrupt file fail-loud on load + skipped by listDrafts (load_draft_throws_on_corrupt_file / list_drafts_returns_saved_ids)"
+    - "draft without provenance rejected (save_draft_rejects_scenario_without_provenance)"
+    - "backward-compat M0-M3: optional provenance does not break legacy scenario/envelope/artifact"
+    - "risk #1 never auto-approve: no reviews/ artifact before POST /verdict (e2e + mcp does_not_execute)"
+    - "XSS escape of provenance.sourceRef in render"
+  missing_or_divergent:
+    - "EC-2 plan said REJECT invalid url at draft boundary; implementation ACCEPTS any string incl. plain garbage"
+    - "no test proving run-time (executeRequest/fetch) rejects a non-templated garbage url — the claimed safety net"
+    - "no test asserting saveDraft/save_scenario_draft never write to reviews/ (only runs/ is checked)"
+
+findings:
+  - id: F-tests-1
+    severity: HIGH
+    file: src/core/draftStore.test.ts
+    line: 60
+    plan_ref: >
+      Plan v1.1 header (line 9) "url do step validada na fronteira do draft" +
+      T1.3 TDD (line 170) "RED save_draft_rejects_step_with_invalid_url — draft com
+      steps[].request.url:'not a url' → ZodError na fronteira do draft (fail-fast;
+      alinha com CapturedRequestSchema.url .url() do runSchema.ts:14)" +
+      Coverage Matrix is silent on EC-2 (EC-2 only appears in the title as an absorbed MUST-FIX).
+    summary: >
+      Plan-vs-implementation divergence on the EC-2 MUST-FIX. The plan explicitly requires
+      the draft boundary to REJECT an invalid url via ZodError. The shipped DraftSchema
+      (ScenarioSchema.extend) inherits ScenarioStepSchema.request.url = z.string() (NOT
+      .url()), so saveDraft accepts ANY string. The test was inverted to
+      save_draft_accepts_templated_url_step and now asserts the OPPOSITE of the plan, with
+      a comment deferring url validation to run-time. The deferral rationale (templated
+      `${{ }}` urls are not valid URLs until resolved) is legitimate, but the
+      implementation deferred ALL validation — including plainly malformed, non-templated
+      strings — which is a wider gap than the rationale justifies.
+    evidence: |
+      # scenarioSchema.ts:43 — url is plain string, not .url()
+      request: z.object({ method: z.string(), url: z.string(), ... })
+      # draftStore.ts:18 — Draft inherits that loose url
+      export const DraftSchema = ScenarioSchema.extend({ provenance: ProvenanceSchema });
+      # Probe (added/removed, read-only): a plain garbage url is ACCEPTED by saveDraft
+      saveDraft({...steps:[{request:{method:"GET",url:"not a url at all"}}]}, {id:"p1",dir})
+        -> resolved { draftId: 'p1', path } (NOT rejected)
+      # The plan's claimed alignment target DOES enforce .url(), but only post-execution:
+      # runSchema.ts:14  url: z.string().url()  (RunEnvelope/CapturedRequest, after the run)
+    recommended_action: >
+      Reconcile the plan and the code, do not just leave the inverted test. Two honest
+      options: (A) Implement the plan as written — add a refined url validator on
+      ScenarioStepSchema/DraftSchema that allows the `${{ }}` template syntax but rejects
+      strings that are neither a valid URL nor a template (regex: contains `${{` OR passes
+      z.string().url()); keep save_draft_rejects_step_with_invalid_url AND add
+      save_draft_accepts_templated_url_step. (B) Formally accept the deferral via an ADR
+      entry in the plan (EC-2 superseded) AND add a regression test proving the run-time
+      safety net: assert runScenario/executeRequest throws RequestExecutionError on
+      url:"not a url at all". Today neither the boundary test nor the run-time-catch test
+      exists, so the "validation is deferred, not dropped" claim is untested.
+
+  - id: F-tests-2
+    severity: MEDIUM
+    file: .git (commit history bcd43a1..4351af8)
+    line: 0
+    plan_ref: "tests.md §2 TDD compliance (verify test committed BEFORE implementation)"
+    summary: >
+      TDD RED-before-GREEN order is not auditable from history. Each phase commit bundles
+      the production code and its tests together (e.g. 4351af8 "feat(core): proveniência
+      aditiva + propagação" carries provenance.ts + scenarioSchema.ts + the *.test.ts in
+      one commit; 90e6e52 likewise for draftStore). No separate RED commit precedes any
+      GREEN commit, so the reviewer cannot confirm the failing-test-first discipline
+      mandated by testing.md §3 / cycle-implement RED→GREEN→REFACTOR.
+    evidence: |
+      git log --oneline:
+      4351af8 feat(core): proveniência aditiva + propagação Scenario→Run→Review (T1.1, T1.2)
+      90e6e52 feat(core): draftStore — persiste cenário gerado como draft commitável (T1.3)
+      4b53dd5 feat(mcp): tool save_scenario_draft ...
+      # tests + src co-committed; no "test(...): RED ..." commit ahead of any feat commit.
+    recommended_action: >
+      Advisory only — the tests themselves are behavior-focused and green, so this is not a
+      blocker. For future phases, commit the failing RED test as its own commit before the
+      GREEN implementation commit so the discipline is auditable, as cycle-implement
+      prescribes.
+
+  - id: F-tests-3
+    severity: LOW
+    file: src/mcp/draft.test.ts
+    line: 64
+    plan_ref: "Plan ADR D3 + risk #1 (never auto-approve); T2.1 acceptance 'never writes reviews/'"
+    summary: >
+      The "does not execute or approve" guard only asserts that runs/ stays empty after the
+      tool call; it does NOT assert that reviews/ stays empty. The structural guarantee
+      (saveDraft/mcp never reference reviews/) holds in code, but the test's negative space
+      is narrower than the risk #1 claim it represents. The E2E covers reviews-absent-before
+      -verdict for the run path, but no test pins reviews-absent for the pure draft-save path.
+    evidence: |
+      # draft.test.ts:64-75 checks readdir(runsDir) === [] but never checks a reviews dir
+      it("save_scenario_draft_tool_does_not_execute_or_approve", ...)
+        await expect(readdir(runsDir)).resolves.toEqual([]);  # runs/ only
+      # grep confirms no reviews/ write path in draftStore.ts / mcp/server.ts (good),
+      # but that invariant is asserted by code-reading, not by a test.
+    recommended_action: >
+      Add one assertion to save_scenario_draft_tool_does_not_execute_or_approve that a
+      HODOR_REVIEWS_DIR tmpdir is also empty after the tool call, locking the no-auto-approve
+      invariant for the draft-only path symmetrically with the run path.
+
+  - id: F-tests-4
+    severity: LOW
+    file: src/m4-e2e.test.ts
+    line: 84
+    plan_ref: "T4.1 step 2 — web renders badge 'gerado pelo agente · pendente de revisão'"
+    summary: >
+      The E2E asserts the listing contains the substrings "🤖 gerado" and "pendente"
+      independently (two separate toContain calls), so it would still pass if the emoji
+      tag and the pending text rendered on unrelated rows. Minor fragility — the unit
+      render tests (render_listing_shows_agent_tag, render_shows_pending_when_no_verdict)
+      cover the badge precisely, so the E2E redundancy is acceptable, but the loose
+      substring match is weaker than co-located assertion.
+    evidence: |
+      expect(listing).toContain("🤖 gerado");
+      expect(listing).toContain("pendente");
+      # two independent substring checks, not "the agent row also shows pending"
+    recommended_action: >
+      Optional: assert the badge and pending marker on the same run entry (e.g. match a
+      single row fragment), or rely solely on the precise unit render tests and drop the
+      loose E2E substring checks. Not blocking.
+
+coverage:
+  draftStore_ts: { stmts: 92.3, branch: 83.33, funcs: 100, lines: 94.28, target: ">=90", meets: true }
+  provenance_ts: { note: "pure schema, 4 tests cover both enum-reject branches + optional sourceRef; effectively full; not separately listed by v8 (<100% files only)", meets: assumed_true }
+  runStore_ts: { stmts: 100, lines: 100 }
+  reviewArtifact_ts: { stmts: 95, lines: 94.73 }
+  scenarioSchema_ts: { stmts: 100, branch: 50, lines: 100, note: "branch 50% is the YAGNI comment region; acceptable" }
+  render_ts: { stmts: 95.71, lines: 98.3 }
+  all_files: { stmts: 92.34, branch: 86.41, funcs: 94.11, lines: 93.86 }
+  backward_compat_m0_m3: green   # full suite 144/144; legacy scenario/envelope/artifact tests pass with optional provenance
+
+blocker_count: 0
+high_count: 1
+medium_count: 1
+low_count: 2

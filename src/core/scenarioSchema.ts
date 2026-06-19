@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProvenanceSchema } from "./provenance.js";
 
 /**
  * Schema do cenário multi-step do M1 (ADR D1).
@@ -50,6 +51,9 @@ export const ScenarioStepSchema = z.object({
 export const ScenarioSchema = z.object({
   schemaVersion: z.literal(1),
   name: z.string(),
+  // M4 (ADR D2): proveniência OPCIONAL e aditiva — cenários M1 (sem ela) seguem
+  // válidos; `schemaVersion` permanece 1. Marca origem (gerado/autorado) + fonte.
+  provenance: ProvenanceSchema.optional(),
   steps: z.array(ScenarioStepSchema).min(1),
 });
 

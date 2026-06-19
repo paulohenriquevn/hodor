@@ -62,8 +62,10 @@ function isVolatileHeader(name: string): boolean {
   return VOLATILE_HEADERS.has(lower) || VOLATILE_HEADER_PREFIXES.some((p) => lower.startsWith(p));
 }
 
-/** Redige credenciais nos headers de request; preserva chaves não-sensíveis. */
-function redactRequestHeaders(headers: Record<string, string>): Record<string, string> {
+/** Redige credenciais nos headers de request; preserva chaves não-sensíveis.
+ * Exportado como SoT (DRY) — reusado pelo draftStore (M4) p/ não vazar segredo
+ * no artefato commitável de draft (mesma defesa do artefato de review). */
+export function redactRequestHeaders(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
     out[k] = SENSITIVE_REQUEST_HEADERS.has(k.toLowerCase()) ? REDACTED : v;

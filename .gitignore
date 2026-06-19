@@ -29,6 +29,8 @@ runs/
 verdicts/
 # NOTA (M3): `reviews/` (artefato de review normalizado + verdict) é COMMITÁVEL
 # por design (DoD M3 — versionável no git). NÃO adicionar `reviews/` aqui.
+# NOTA (M4): `drafts/` (cenário candidato gerado pelo agente, pré-execução) é
+# COMMITÁVEL por design (DoD M4 — humano edita no git antes de aprovar). NÃO ignorar.
 
 # Ralph-loop local state (per-machine)
 ralph-loop.local.md

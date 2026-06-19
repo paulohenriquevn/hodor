@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { renderRun } from "./render.js";
-import type { RunEnvelope, RunStep } from "../core/index.js";
+import { renderRun, renderListing } from "./render.js";
+import type { RunEnvelope, RunStep, Provenance } from "../core/index.js";
+
+const agentProv: Provenance = {
+  origin: "agent-generated",
+  sourceKind: "curl",
+  sourceRef: "curl http://api.test/x",
+  generatedAt: "2026-06-19T00:00:00.000Z",
+};
 
 function step(overrides: Partial<RunStep> = {}): RunStep {
   return {
@@ -164,5 +171,45 @@ describe("renderRun (M2 — verdict)", () => {
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("rejected");
+  });
+});
+
+describe("M4 — badge de proveniência (gerado pelo agente)", () => {
+  it("render_shows_agent_generated_badge", () => {
+    const env = { ...envelope([step()]), provenance: agentProv } as RunEnvelope;
+    const html = renderRun(env);
+    expect(html).toContain("gerado pelo agente");
+  });
+
+  it("render_shows_pending_when_no_verdict", () => {
+    const env = { ...envelope([step()]), provenance: agentProv } as RunEnvelope;
+    expect(renderRun(env, null)).toContain("pendente de revisão");
+  });
+
+  it("render_omits_pending_when_verdict_present", () => {
+    const env = { ...envelope([step()]), provenance: agentProv } as RunEnvelope;
+    const html = renderRun(env, { runId: "run-1", verdict: "approved", decidedAt: "2026-06-19T00:00:00.000Z" });
+    expect(html).toContain("gerado pelo agente");
+    expect(html).not.toContain("pendente de revisão");
+  });
+
+  it("render_omits_badge_for_human_authored", () => {
+    // run M0-M3 (sem provenance) → sem badge (backward-compat visual)
+    expect(renderRun(envelope([step()]))).not.toContain("gerado pelo agente");
+  });
+
+  it("render_escapes_provenance_source_ref", () => {
+    const env = { ...envelope([step()]), provenance: { ...agentProv, sourceRef: "<script>alert(1)</script>" } } as RunEnvelope;
+    const html = renderRun(env);
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("render_listing_shows_agent_tag", () => {
+    const html = renderListing([
+      { runId: "r1", name: "gerado", createdAt: "x", stepCount: 1, allAssertsPass: true, verdict: null, origin: "agent-generated" },
+      { runId: "r2", name: "manual", createdAt: "y", stepCount: 1, allAssertsPass: true, verdict: null },
+    ]);
+    expect(html).toContain("🤖 gerado");
   });
 });

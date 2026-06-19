@@ -1,0 +1,160 @@
+agent: review-m4-scenario-generation-wiring
+review_target: main..HEAD for plan m4-scenario-generation
+plan: .claude/knowledge-base/plans/m4-scenario-generation-plan.md
+date: 2026-06-19
+verdict: READY_TO_MERGE  # no BLOCKER, no HIGH; one MEDIUM (export-for-future), the rest INFO
+
+triad_revalidation:
+  total_new_symbols: 11   # ProvenanceSchema, Provenance, DraftSchema, Draft, SaveDraftOptions, saveDraft, loadDraft, listDrafts, defaultDraftsDir, save_scenario_draft (tool), getDraftSavedCount
+  pillar_a_honest_pass: "9 / 11"   # saveDraft, ProvenanceSchema, DraftSchema, types, save_scenario_draft, getDraftSavedCount, defaultDraftsDir all have real production callers; loadDraft/listDrafts have NO production caller (see F-wire-1)
+  pillar_b_honest_pass: "11 / 11"  # every symbol is exercised (not merely imported) by at least one integration/E2E test
+  pillar_c_observed: "1 / 1"       # draftSavedCount increments through the REAL tool call (mcp/draft.test.ts:81) + stderr event line (server.ts:120)
+
+symbol_classification:
+  - symbol: ProvenanceSchema
+    classification: production-wired
+    production_callers:
+      - src/core/scenarioSchema.ts:56 (provenance? optional on ScenarioSchema)
+      - src/core/runSchema.ts:61 (provenance? optional on RunEnvelopeSchema)
+      - src/core/reviewArtifact.ts:35 (provenance? optional on artifact)
+      - src/core/draftStore.ts:18 (DraftSchema extends with required provenance)
+      - src/mcp/server.ts:113 (save_scenario_draft inputSchema)
+    note: SoT único do conceito (DRY) — referenciado por 4 schemas + tool MCP. Fully wired.
+  - symbol: Provenance (type)
+    classification: production-wired
+    production_callers:
+      - src/core/runStore.ts:28 (buildRunEnvelope param)
+    note: type-level wiring, plus re-exported for adapters.
+  - symbol: DraftSchema
+    classification: production-wired
+    production_callers:
+      - src/core/draftStore.ts:50 (saveDraft parse), :72 (loadDraft parse)
+    note: internal validation boundary; reachable via saveDraft production caller.
+  - symbol: saveDraft
+    classification: production-wired
+    production_callers:
+      - src/mcp/server.ts:118 (save_scenario_draft tool — REAL caller, not no-op/dead-branch)
+    note: pillar (a) honest — the MCP tool delegates to it on every invocation.
+  - symbol: loadDraft
+    classification: export-for-test + internal-use (NO external production caller)
+    production_callers:
+      - src/core/draftStore.ts:92 (listDrafts iterates loadDraft — internal, same module)
+    test_callers:
+      - src/mcp/draft.test.ts:46, src/m4-e2e.test.ts:76, src/core/draftStore.test.ts (round-trip)
+    note: >
+      No production consumer outside draftStore.ts (no GET /drafts route, no CLI).
+      See F-wire-1. Mirrors M3 loadReviewArtifact, which was accepted with the
+      identical wiring profile (defined in core, re-exported, test-only external caller).
+  - symbol: listDrafts
+    classification: export-for-future (NO production caller at all)
+    production_callers: []
+    test_callers:
+      - src/mcp/draft.test.ts:60, src/core/draftStore.test.ts:96,:102
+    note: See F-wire-1 (MEDIUM). Pure export-for-test/future-UI; no in-project production path reaches it.
+  - symbol: defaultDraftsDir
+    classification: production-wired (internal default-param)
+    production_callers:
+      - src/core/draftStore.ts:51 (saveDraft default dir), :64 (loadDraft default), :79 (listDrafts default)
+    note: default-arg provider; reachable in production via saveDraft.
+  - symbol: SaveDraftOptions (type)
+    classification: production-wired
+    production_callers:
+      - src/core/draftStore.ts:48 (saveDraft signature)
+  - symbol: save_scenario_draft (MCP tool)
+    classification: production-wired
+    production_callers:
+      - registered in buildServer (src/mcp/server.ts:107); buildServer is the prod entrypoint (main() at :135 connects StdioServerTransport)
+    note: appears in tools/list; exercised end-to-end by mcp/draft.test.ts via real InMemoryTransport client.callTool.
+  - symbol: getDraftSavedCount
+    classification: production-wired (observability accessor)
+    production_callers:
+      - reads draftSavedCount incremented at src/mcp/server.ts:119 inside the tool handler
+    note: pillar (c) accessor; increments verified through a REAL tool call (draft.test.ts:81).
+  - symbol: provenanceBadge (internal, not exported — web/render.ts:150)
+    classification: production-wired
+    production_callers:
+      - src/web/render.ts:219 (renderRun) → src/web/server.ts:107 (GET /runs/:id) — reachable from HTTP entrypoint
+    note: >
+      Listing badge is a SEPARATE inline path (render.ts:250-253 reads ListingItem.origin),
+      fed by listRuns at server.ts:240 (env.provenance?.origin). Both the run-view badge
+      and the listing badge have a real entrypoint→render path. Plan T3.1 ("na listagem E na
+      view de run") fully honored.
+
+integration_with_existing_flows:
+  entrypoints_traced:
+    - "MCP stdio (src/mcp/server.ts main()) → registerTool save_scenario_draft → saveDraft → drafts/{id}.json : PATH EXISTS"
+    - "MCP run_scenario → runScenario (runScenario.ts:45 propagates scenario.provenance) → buildRunEnvelope → env.provenance : PATH EXISTS"
+    - "HTTP GET / (server.ts:87) → listRuns (:240 reads env.provenance.origin) → renderListing badge : PATH EXISTS"
+    - "HTTP GET /runs/:id (server.ts:107) → renderRun → provenanceBadge : PATH EXISTS"
+    - "HTTP POST /runs/:id/verdict → buildReviewArtifact (reviewArtifact.ts:56 carries env.provenance) → reviews/{id}.json : PATH EXISTS"
+  propagation_chain_verified: "Scenario.provenance → RunEnvelope.provenance → ReviewArtifact.provenance — all three hops have a production caller; E2E (m4-e2e.test.ts) asserts the full chain incl. badge + risk #1 (no reviews/ before POST /verdict)."
+  dip_boundary: "src/core/ imports nothing from ../web or ../mcp (grep clean). draftStore.ts/provenance.ts are pure domain. CLEAN."
+  zero_new_dependency: "git diff main..HEAD -- package.json is empty. Confirmed."
+
+findings:
+  - id: F-wire-1
+    severity: MEDIUM
+    file: src/core/draftStore.ts
+    line: 79
+    plan_ref: T1.3 draftStore (saveDraft/loadDraft/listDrafts) + Baseline Context "drafts/ commitável p/ humano editar"
+    summary: >
+      listDrafts has ZERO production caller and loadDraft has no production caller outside
+      its own module (only listDrafts uses it internally). Both are reachable only from tests.
+      M4 ships no GET /drafts route, no CLI, and no MCP tool that lists/reads drafts — so the
+      "humano edita/refina no git antes de aprovar" loop (DoD #3) is served by raw file editing
+      in drafts/, NOT by these read functions. They are export-for-test / planned-for-future-UI,
+      not yet wired into any product surface.
+    evidence: |
+      grep -rn 'listDrafts' src/ | grep -v test  ⇒ only draftStore.ts (def) + index.ts (re-export)
+      grep -rn 'loadDraft'  src/ | grep -v test  ⇒ only draftStore.ts:64 (def), :92 (internal use by listDrafts), index.ts (re-export)
+      No `/drafts` HTTP route in src/web/server.ts (routes: `/`, `/runs/:id`, `/runs/:id/verdict`).
+      No MCP tool reads/lists drafts (server.ts registers run_request, run_scenario, save_scenario_draft only).
+      Precedent: M3 loadReviewArtifact (reviewArtifact.ts:91) has the IDENTICAL profile — defined in
+      core, re-exported, only test/E2E callers, no web/server.ts caller — and was accepted at M3.
+      So this is a consistent, pre-existing pattern in this codebase, not a regression.
+    recommended_action: >
+      NON-BLOCKING. Accept as honest export-for-test/future-UI (a drafts review UI is the natural
+      M5+ consumer; code-quality classifies these as dead_public_export severity, but the M3
+      precedent + the E2E/integration test coverage make them export-for-test, not dead). To be
+      fully clean either (a) add a one-line note in core/index.ts that loadDraft/listDrafts are the
+      read surface for a future drafts UI (planned, not dead), or (b) confirm via /code-quality that
+      vulture/knip treats test-exercised public exports as live. Do NOT delete — they round-trip
+      saveDraft and are exercised by mcp/draft.test.ts + draftStore.test.ts.
+
+  - id: F-wire-2
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 119
+    plan_ref: T2.1 DoD — métrica draftSavedCount em stderr (wiring pillar c)
+    summary: >
+      Pillar (c) for the draft tool is a process-local counter (draftSavedCount) + a stderr
+      JSON event line. There is no persisted .wiring-evidence.json artifact in the repo, so the
+      runtime-metric magnitude cannot be sanity-checked against a recorded real workload — only
+      against test behavior. The counter increments correctly (before+1) through a REAL tool call.
+    evidence: |
+      find . -name .wiring-evidence.json (excl node_modules) ⇒ none.
+      Metric is in-memory (server.ts:32 let draftSavedCount; :119 += 1; :33 getter) and stderr
+      (server.ts:120 console.error event). Magnitude == 1 per save_scenario_draft call, which is
+      the correct expected magnitude for a single-shot persistence tool (unlike a batch metric
+      that should be >>0). draft.test.ts:81 asserts before+1 through the real InMemoryTransport call.
+    recommended_action: >
+      No action. The metric is honest and the magnitude is correct-by-design (1 per call). The
+      absence of .wiring-evidence.json is consistent with the run_request/run_scenario tools
+      (same in-memory-counter + stderr pattern, M0/M1) — this project's pillar-c convention is
+      a counter + stderr event, not a persisted evidence file.
+
+  - id: F-wire-3
+    severity: INFO
+    file: src/web/render.ts
+    line: 250
+    plan_ref: T3.1 — badge "na listagem E na view de run"
+    summary: >
+      The provenance badge is implemented twice by design: the run-view badge (provenanceBadge
+      fn, render.ts:150, called at :219) and the listing badge (inline at render.ts:250-253 reading
+      ListingItem.origin). This is NOT a DRY violation — different data shapes (full RunEnvelope vs
+      flat ListingItem) and different copy. Both paths are production-reachable (GET /runs/:id and
+      GET / respectively) and both are exercised by render.test.ts.
+    evidence: |
+      run-view: server.ts:107 renderRun → render.ts:219 provenanceBadge(env, verdict)
+      listing:  server.ts:88 renderListing ← listRuns(:240 env.provenance?.origin) → render.ts:250 it.origin
+    recommended_action: No action — both surfaces wired, XSS-escaped (escapeHtml on sourceKind/sourceRef), and tested.

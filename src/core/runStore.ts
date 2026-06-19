@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { RunEnvelopeSchema, type RunEnvelope, type RunStep } from "./runSchema.js";
+import type { Provenance } from "./provenance.js";
 
 export interface EnvelopeDeps {
   /** Clock injetável (ms). Default Date.now. */
@@ -24,6 +25,7 @@ export function buildRunEnvelope(
   steps: RunStep[],
   deps: EnvelopeDeps = {},
   name?: string,
+  provenance?: Provenance,
 ): RunEnvelope {
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? randomUUID;
@@ -33,6 +35,8 @@ export function buildRunEnvelope(
     createdAt: new Date(now()).toISOString(),
     // M2 (D4): inclui name só quando fornecido (run_request do M0 não tem cenário).
     ...(name !== undefined ? { name } : {}),
+    // M4 (D2): propaga proveniência do cenário quando fornecida (aditivo).
+    ...(provenance !== undefined ? { provenance } : {}),
     steps,
   };
 }

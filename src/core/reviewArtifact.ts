@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { CapturedRequestSchema, AssertResultSchema, type RunEnvelope } from "./runSchema.js";
 import { VerdictSchema, type Verdict } from "./verdict.js";
+import { ProvenanceSchema } from "./provenance.js";
 import { normalizeRun } from "./normalizeRun.js";
 import { stableStringify } from "./stableStringify.js";
 
@@ -29,6 +30,9 @@ const NormalizedStepSchema = z.object({
 export const ReviewArtifactSchema = z.object({
   artifactVersion: z.literal(1),
   scenarioName: z.string().optional(),
+  // M4 (ADR D2): proveniência OPCIONAL — sobrevive ao loop gerado→run→review,
+  // dando ao revisor a origem ("gerado pelo agente"). Artefatos M3 (sem ela) válidos.
+  provenance: ProvenanceSchema.optional(),
   runId: z.string().min(1),
   createdAt: z.string(),
   verdict: VerdictSchema,
@@ -48,6 +52,8 @@ export function buildReviewArtifact(env: RunEnvelope, verdict: Verdict): ReviewA
   return {
     artifactVersion: 1,
     ...(normalized.scenarioName !== undefined ? { scenarioName: normalized.scenarioName } : {}),
+    // M4 (D2): carrega a proveniência do run ao artefato versionável quando presente.
+    ...(env.provenance !== undefined ? { provenance: env.provenance } : {}),
     runId: env.runId,
     createdAt: env.createdAt,
     verdict,

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hodor": {
+      "command": "npx",
+      "args": ["tsx", "src/mcp/server.ts"],
+      "cwd": "/home/paulo/Projetos/hodor"
+    }
+  }
+}
