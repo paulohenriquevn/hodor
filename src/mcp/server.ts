@@ -10,7 +10,20 @@ import {
   ScenarioSchema,
   ProvenanceSchema,
   saveDraft,
+  scenarioKey,
+  pruneRunHistory,
+  type RunEnvelope,
 } from "../core/index.js";
+
+/** Retenção (M5 D5): poda o histórico do cenário após persistir um run. Best-effort
+ * (falha de poda não derruba a tool — o run já foi gravado). */
+async function pruneAfterPersist(env: RunEnvelope): Promise<void> {
+  try {
+    await pruneRunHistory(scenarioKey(env));
+  } catch (err) {
+    console.error(JSON.stringify({ event: "prune_failed", error: String(err) }));
+  }
+}
 
 /**
  * Adaptador MCP (ADR D1/D2/D5). Expõe a tool `run_request` sobre stdio,
@@ -59,6 +72,7 @@ export function buildServer(): McpServer {
       const step = await executeRequest({ method, url, headers, body });
       const env = buildRunEnvelope([step]);
       const path = await persistRun(env);
+      await pruneAfterPersist(env); // M5: retenção last-N por cenário
       runCount += 1;
       // Runtime metric em stderr (pillar c) — stdout é do protocolo.
       console.error(
@@ -90,6 +104,7 @@ export function buildServer(): McpServer {
       // Caller de produção da engine (wiring triad pillar a).
       const env = await runScenario(scenario);
       const path = await persistRun(env);
+      await pruneAfterPersist(env); // M5: retenção last-N por cenário
       scenarioRunCount += 1;
       console.error(
         JSON.stringify({ event: "run_scenario", steps: env.steps.length, path }),

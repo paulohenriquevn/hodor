@@ -56,6 +56,7 @@ export {
 // M5 — regressão: diff entre runs + anti-flaky
 export { maskNoise, NOISE_SENTINEL } from "./maskNoise.js";
 export { diffRuns, type RunDiff, type StepDiff, type HeaderDiff } from "./diffRuns.js";
+export { scenarioKey, findPreviousRun, pruneRunHistory, defaultHistoryLimit } from "./runHistory.js";
 
 // M3 — persistência versionável
 export { stableStringify } from "./stableStringify.js";
