@@ -7,7 +7,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ## [Unreleased]
 
 ### Added
-- **M2 — Web app de review (req/resp/headers + verdict):** a web app de review (`GET /`) lista os runs (cenário/data/steps/resumo pass-fail/verdict) e, por run, exibe request/response/headers de cada step com asserts (pass/fail evidente em verde/vermelho); o humano registra um verdict (aprovado/rejeitado + nota opcional) via `POST /runs/:id/verdict`, validado e persistido em `verdicts/{runId}.json`; render robusto por content-type (`pickRenderer`: JSON pretty / texto / binário omitido) com truncamento de payloads grandes. Server-rendered nativo (HTTP + HTML, ZERO framework). O envelope de run ganhou `name` (nome do cenário) de forma aditiva/opcional — backward-compatible.
 
 ### Changed
 
@@ -18,6 +17,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ### Fixed
 
 ### Security
+
+## [0.3.0] - 2026-06-19
+
+### Added
+- **M2 — Web app de review (req/resp/headers + verdict):** a web app de review (`GET /`) lista os runs (cenário/data/steps/resumo pass-fail/verdict) e, por run, exibe request/response/headers de cada step com asserts (pass/fail evidente em verde/vermelho); o humano registra um verdict (aprovado/rejeitado + nota opcional) via `POST /runs/:id/verdict`, validado e persistido em `verdicts/{runId}.json`; render robusto por content-type (`pickRenderer`: JSON pretty / texto / binário omitido) com truncamento de payloads grandes. Server-rendered nativo (HTTP + HTML, ZERO framework). O envelope de run ganhou `name` (nome do cenário) de forma aditiva/opcional — backward-compatible.
 
 ## [0.2.0] - 2026-06-18
 
