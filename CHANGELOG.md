@@ -18,6 +18,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 
 ### Security
 
+## [0.4.0] - 2026-06-19
+
+### Added
+- **M3 — Persistência versionável + estado de revisão (fecha o V1):** ao registrar um verdict, o sistema escreve um **artefato de review versionável** em `reviews/{runId}.json` — cenário + run normalizado + verdict — serializado de forma **determinística** (`stableStringify`: chaves ordenadas) com os **campos voláteis de protocolo removidos** (`normalizeRun`: `response.timings` + headers voláteis de resposta como `date`/`etag`/`x-request-id` + prefixos `x-amz-`/`x-amzn-`/`cf-`), validado por zod e versionado por `artifactVersion`. Dois runs do mesmo cenário produzem `steps` byte-idênticos (diff estável). `reviews/` é commitável (diff-amigável no git); `runs/` (run bruto) e `verdicts/` (store ao-vivo da web app) permanecem efêmeros/gitignored. Fecha o critério de V1: o loop agente→execução→revisão→verdict fica registrado em arquivos commitáveis. ZERO dependência nova.
+
+
+### Security
+- **M3 — Redação de credenciais no artefato versionável:** como `reviews/{runId}.json` é commitável, `normalizeRun` redige (`<redacted>`) os headers de **request** sensíveis (`authorization`, `cookie`, `x-api-key`, `proxy-authorization`, `x-auth-token`, etc.) antes de gravar — a chave é preservada para o revisor, o valor nunca vai para o git. `runId` é validado como path-safe antes do path-join (defense-in-depth).
+
 ## [0.3.0] - 2026-06-19
 
 ### Added

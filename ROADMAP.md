@@ -117,15 +117,17 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
-### M2 — [ ] Web app de review (req/resp/headers + verdict)
+### M2 — [x] Web app de review (req/resp/headers + verdict)
 
 **Objective:** Entregar a interface de revisão humana completa sobre cenários multi-step.
 
 **Definition of done:**
 
-- [ ] A web app lista cenários e suas execuções, e para cada step exibe request completo (method/url/headers/body) e response completo (status/headers/body), com os asserts e seu resultado.
-- [ ] O humano registra um verdict por cenário (aprovado/rejeitado) com nota opcional; o verdict é persistido.
-- [ ] Diferenças de pass/fail por assert são visualmente evidentes (o revisor entende em segundos o que passou e o que falhou).
+- [x] A web app lista cenários e suas execuções, e para cada step exibe request completo (method/url/headers/body) e response completo (status/headers/body), com os asserts e seu resultado.
+- [x] O humano registra um verdict por cenário (aprovado/rejeitado) com nota opcional; o verdict é persistido.
+- [x] Diferenças de pass/fail por assert são visualmente evidentes (o revisor entende em segundos o que passou e o que falhou).
+
+**Delivered:** v0.3.0 (PR #3, merge `ae929b6`, tag `v0.3.0`) em 2026-06-19. Web app de review **server-rendered nativa, ZERO framework** (decisão de framework do ROADMAP resolvida no DISCOVER: hoppscotch usa 102 deps Vue/Vite para autoria; revisão é read + 1 POST — risco #1 mitigado). `GET /` lista runs (cenário/data/steps/pass-fail/verdict); `GET /runs/:id` exibe req/resp/headers por step + asserts (verde/vermelho); verdict humano via `POST /runs/:id/verdict` validado (zod) e persistido em `verdicts/{runId}.json`. Render por content-type (`pickRenderer`) + truncamento (risco #2). Backward-compatible com M0/M1 (envelope `name` aditivo). Demo E2E real contra `jsonplaceholder`. Artefatos: `knowledge-base/plans/m2-review-webapp-plan.md`, `.../reviews/m2-review-webapp-review-2026-06-18.md` (READY_TO_MERGE), `.../releases/v0.3.0-release.md`, `.../roadmap-runs/M2-2026-06-19.md`.
 
 **Dependencies:** M1.
 

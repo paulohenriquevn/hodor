@@ -10,21 +10,25 @@ import { buildRunEnvelope, persistRun, loadVerdict, type RunStep } from "./core/
 let server: Server | undefined;
 let runsDir: string | undefined;
 let verdictsDir: string | undefined;
+let reviewsDir: string | undefined;
 
 beforeEach(async () => {
   runsDir = await mkdtemp(join(tmpdir(), "hodor-review-e2e-"));
   verdictsDir = await mkdtemp(join(tmpdir(), "hodor-review-e2e-v-"));
+  reviewsDir = await mkdtemp(join(tmpdir(), "hodor-review-e2e-r-"));
 });
 afterEach(async () => {
   if (server) await new Promise<void>((r) => server!.close(() => r()));
   server = undefined;
-  for (const d of [runsDir, verdictsDir]) if (d) await rm(d, { recursive: true, force: true });
+  for (const d of [runsDir, verdictsDir, reviewsDir]) if (d) await rm(d, { recursive: true, force: true });
   runsDir = undefined;
   verdictsDir = undefined;
+  reviewsDir = undefined;
 });
 
 function start(): Promise<string> {
-  server = buildWebServer(runsDir!, verdictsDir!);
+  // reviewsDir isolado em tmpdir: o POST verdict (M3) escreve o artefato fora do repo (F-xval-1)
+  server = buildWebServer(runsDir!, verdictsDir!, reviewsDir!);
   return new Promise((resolve) => {
     server!.listen(0, "127.0.0.1", () => {
       const { port } = server!.address() as AddressInfo;

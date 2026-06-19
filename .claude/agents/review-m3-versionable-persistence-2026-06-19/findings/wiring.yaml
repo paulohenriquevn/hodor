@@ -1,0 +1,139 @@
+agent: review-m3-versionable-persistence-wiring
+review_target: main..HEAD for plan m3-versionable-persistence
+plan: .claude/knowledge-base/plans/m3-versionable-persistence-plan.md
+date: 2026-06-19
+
+# Method: for each new M3 export in src/core/index.ts, grep -rn "<symbol>" src/
+# classifying production callers vs test-only callers. Read each production caller
+# to confirm it is a real call (not a no-op / dead branch). Verified the suite green
+# (npx vitest run reviewArtifact + server + v1-e2e = 22 passed).
+
+triad_revalidation:
+  total_new_symbols: 8          # stableStringify, normalizeRun, VOLATILE_HEADERS, NormalizedRun, NormalizedStep, ReviewArtifactSchema, buildReviewArtifact, saveReviewArtifact, loadReviewArtifact, defaultReviewsDir (types + values; counted as 8 wiring-relevant runtime/exported units)
+  pillar_a_honest_pass: "6 / 8"  # stableStringify, normalizeRun, buildReviewArtifact, saveReviewArtifact, ReviewArtifactSchema, defaultReviewsDir all have a REAL production caller
+  pillar_b_honest_pass: "8 / 8"  # every symbol is exercised in the Act phase of an integration/e2e test (not merely imported)
+  pillar_c_observed: "yes"       # observable = reviews/{id}.json persisted; exercised E2E by v1-e2e.test.ts (2 artifacts written + loaded back, steps deep-equal)
+
+symbol_classification:
+  stableStringify:        production_caller=src/core/reviewArtifact.ts:66 (saveReviewArtifact)        -> HONEST WIRED
+  normalizeRun:           production_caller=src/core/reviewArtifact.ts:47 (buildReviewArtifact)        -> HONEST WIRED
+  buildReviewArtifact:    production_caller=src/web/server.ts:161 (postVerdict)                        -> HONEST WIRED
+  saveReviewArtifact:     production_caller=src/web/server.ts:170 (postVerdict)                        -> HONEST WIRED
+  ReviewArtifactSchema:   production_caller=src/web/server.ts:161 (postVerdict parse) + reviewArtifact.ts internal -> HONEST WIRED
+  defaultReviewsDir:      production_caller=src/web/server.ts:55 (buildWebServer default param)        -> HONEST WIRED
+  loadReviewArtifact:     callers=test-only (v1-e2e.test, server.test, reviewArtifact.test); NO production caller -> EXPORT-FOR-TEST (read-side boundary; production read path is M5 run-vs-run, out of scope)
+  VOLATILE_HEADERS:       production_use=src/core/normalizeRun.ts:43 (internal, normalizeHeaders); export itself only referenced by index.ts re-export -> EXPORT-FOR-INSPECTION (used internally; export is API-surface only)
+  NormalizedRun (type):   production_use=return type of normalizeRun (src/core/normalizeRun.ts:64)     -> WIRED (type)
+  NormalizedStep (type):  production_use=internal to normalizeRun.ts; NOT consumed by reviewArtifact (it redefines NormalizedStepSchema) -> EXPORT-FOR-TEST/FUTURE (type)
+
+findings:
+  - id: F-wire-1
+    severity: LOW
+    file: src/core/index.ts
+    line: 51
+    plan_ref: T1.3 reviewArtifact (save/loadReviewArtifact em reviews/)
+    summary: >
+      loadReviewArtifact has NO production caller — only test callers (v1-e2e.test.ts,
+      server.test.ts, reviewArtifact.test.ts). It is the read-side of the persistence
+      boundary and is exercised as the OBSERVABLE in the E2E (pillar c), so it is NOT
+      dead code — it is export-for-test. The production read path (run-vs-run
+      comparison consuming the artifact) is explicitly scoped to M5 per the plan.
+    evidence: |
+      grep -rln "loadReviewArtifact" src/ | grep -v test  ->  only src/core/index.ts (re-export) + reviewArtifact.ts (definition)
+      All actual call sites are test files:
+        src/v1-e2e.test.ts:80,81   (E2E observable: loads both artifacts, asserts steps deep-equal)
+        src/web/server.test.ts:215,229
+        src/core/reviewArtifact.test.ts:63,73
+      Plan T1.3 mandated save/load round-trip; M5 is the future production reader.
+    recommended_action: >
+      ACCEPT for M3. This is honest export-for-test of a symmetric persistence API
+      (save has a production caller; load is its inverse, consumed by the E2E proof
+      and the future M5 reader). No action needed; note it in the review so the M5
+      cycle wires the production read path. Do NOT add a no-op caller to satisfy a
+      checkbox.
+
+  - id: F-wire-2
+    severity: LOW
+    file: src/core/reviewArtifact.ts
+    line: 17
+    plan_ref: T1.2 normalizeRun / T1.3 reviewArtifact (steps normalizados)
+    summary: >
+      reviewArtifact.ts defines its own zod NormalizedStepSchema (line 17) instead of
+      deriving from / reusing the exported NormalizedStep type in normalizeRun.ts. The
+      two shapes are kept in sync by hand. NormalizedStep (the type) is therefore not
+      consumed by reviewArtifact — it is effectively export-for-test/future-use. This
+      is a mild DRY smell (two representations of one concept), not a wiring break.
+    evidence: |
+      src/core/normalizeRun.ts:23  export interface NormalizedStep { request; response{status,statusText,headers,body}; asserts?; captures? }
+      src/core/reviewArtifact.ts:17 const NormalizedStepSchema = z.object({ request, response{status,statusText,headers,body}, asserts?, captures? })
+      grep shows NormalizedStep type has no consumer outside normalizeRun.ts itself.
+      buildReviewArtifact (line 47) consumes normalizeRun(env).steps at runtime, so the
+      DATA is wired; only the TYPE/SCHEMA duplication is the concern.
+    recommended_action: >
+      ACCEPT for M3 (the duplication is ~6 lines and both are validated). Consider, in a
+      later cleanup, deriving NormalizedStep from NormalizedStepSchema via z.infer (single
+      source of truth) so the shapes cannot drift. Non-blocking.
+
+  - id: F-wire-3
+    severity: INFO
+    file: src/core/normalizeRun.ts
+    line: 9
+    plan_ref: T1.2 normalizeRun (VOLATILE_HEADERS constante explícita)
+    summary: >
+      VOLATILE_HEADERS is exported but only USED internally (normalizeHeaders, line 43)
+      and referenced by tests. The plan (ADR D2) deliberately makes the volatile list an
+      "explicit, inspectable constant" — so exporting it for transparency/test assertion
+      is intentional and correct, not a dead export.
+    evidence: |
+      src/core/normalizeRun.ts:43  if (!VOLATILE_HEADERS.has(k.toLowerCase())) ...   (real internal use)
+      Plan ADR D2: "Lista de voláteis = constante explícita inspecionável."
+    recommended_action: ACCEPT — intentional export-for-inspection per ADR D2. No action.
+
+  - id: F-wire-4
+    severity: INFO
+    file: src/web/server.ts
+    line: 156
+    plan_ref: T2.1 / EC-1 (build antes de salvar) + Global DoD artefato-versionável proof
+    summary: >
+      Pillar (a) production wiring of the artifact is HONEST and CORRECT. postVerdict
+      builds+validates the artifact in memory FIRST (line 161, EC-1), then writes verdict
+      (169) then artifact (170). The observable (reviews/{id}.json) is exercised end-to-end
+      by v1-e2e.test.ts: 2 real runs -> 2 POSTs (303) -> 2 artifacts loaded back, steps
+      deep-equal. No no-op caller, no dead branch, no gamed metric.
+    evidence: |
+      src/web/server.ts:161  reviewArtifact = ReviewArtifactSchema.parse(buildReviewArtifact(env, verdict));
+      src/web/server.ts:170  await saveReviewArtifact(reviewArtifact, reviewsDir);
+      src/v1-e2e.test.ts:69-86  real fetch POST x2 -> loadReviewArtifact x2 -> steps deep-equal + verdict approved
+      Suite: npx vitest run reviewArtifact+server+v1-e2e = 22 passed.
+    recommended_action: NONE — wiring triad honestly satisfied for the persistence flow.
+
+  - id: F-wire-5
+    severity: INFO
+    file: src/core/index.ts
+    line: 44
+    plan_ref: architecture.md §1-§2 (direção web -> core; core não importa web)
+    summary: >
+      DIP boundary respected. core/ does NOT import web/local/cloud/theokit/agent-tools.
+      Direction is web -> core only (server.ts imports from ../core/index.js). reviewArtifact
+      lives in core (pure domain + zod-at-boundary); web is the adapter/caller per ADR D5.
+    evidence: |
+      grep -rn 'from "../web|from "../local|from "../cloud|from "../theokit|from "../agent-tools' src/core/  -> none
+      src/web/server.ts:9-14 imports buildReviewArtifact/saveReviewArtifact/ReviewArtifactSchema/defaultReviewsDir from ../core/index.js
+    recommended_action: NONE.
+
+summary_verdict:
+  blocker_count: 0
+  high_count: 0
+  medium_count: 0
+  low_count: 2
+  info_count: 3
+  wiring_honest: true
+  notes: >
+    Wiring triad for the M3 persistence flow is honestly satisfied. The single
+    persistence entry path (POST /runs/:id/verdict -> buildReviewArtifact ->
+    saveReviewArtifact -> reviews/{id}.json) has a real production caller, a real
+    integration test that exercises it in the Act phase, and a real observable
+    (committable artifact) proven by the E2E. loadReviewArtifact and the
+    NormalizedStep type are honest export-for-test (read-side + schema), with the
+    production read path explicitly deferred to M5 — flagged LOW so the M5 cycle
+    wires them, not as dead code to delete. No BLOCKER/HIGH. Gate: PASS for wiring.

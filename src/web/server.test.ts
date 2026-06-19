@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildWebServer } from "./server.js";
-import { buildRunEnvelope, persistRun, loadVerdict, type RunStep } from "../core/index.js";
+import { buildRunEnvelope, persistRun, loadVerdict, loadReviewArtifact, type RunStep } from "../core/index.js";
 
 const sampleStep: RunStep = {
   request: { method: "GET", url: "http://127.0.0.1:8080/ok", headers: {} },
@@ -24,10 +24,12 @@ const UUID2 = "00000000-0000-0000-0000-000000000002";
 let server: Server | undefined;
 let dir: string | undefined;
 let vdir: string | undefined;
+let rdir: string | undefined;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "hodor-web-"));
   vdir = await mkdtemp(join(tmpdir(), "hodor-web-v-"));
+  rdir = await mkdtemp(join(tmpdir(), "hodor-web-r-"));
 });
 
 afterEach(async () => {
@@ -35,13 +37,14 @@ afterEach(async () => {
     await new Promise<void>((r) => server!.close(() => r()));
     server = undefined;
   }
-  for (const d of [dir, vdir]) if (d) await rm(d, { recursive: true, force: true });
+  for (const d of [dir, vdir, rdir]) if (d) await rm(d, { recursive: true, force: true });
   dir = undefined;
   vdir = undefined;
+  rdir = undefined;
 });
 
 function start(): Promise<string> {
-  server = buildWebServer(dir!, vdir!);
+  server = buildWebServer(dir!, vdir!, rdir!);
   return new Promise((resolve) => {
     server!.listen(0, "127.0.0.1", () => {
       const { port } = server!.address() as AddressInfo;
@@ -142,7 +145,9 @@ describe("web server — M2 verdict (POST)", () => {
       body: "verdict=maybe",
     });
     expect(res.status).toBe(400);
+    // EC-1 (F-tests-3): build+valida em memória ANTES de gravar → sem órfão de verdict NEM de artefato.
     expect(await loadVerdict(UUID1, vdir!)).toBeNull();
+    expect(await loadReviewArtifact(UUID1, rdir!)).toBeNull();
   });
 
   it("post_verdict_missing_field_is_400", async () => {
@@ -184,5 +189,48 @@ describe("web server — M2 verdict (POST)", () => {
     expect(html).toContain("verdict-form");
     expect(html).toContain("name='verdict'");
     expect(html).toContain("pendente");
+  });
+});
+
+describe("web server — M3 review artifact (POST escreve versionável)", () => {
+  const stepWithVolatile: RunStep = {
+    request: { method: "GET", url: "http://api.test/x", headers: {} },
+    response: {
+      status: 200,
+      statusText: "OK",
+      headers: { "content-type": "application/json", date: "Mon, 01 Jan 2026" },
+      body: '{"ok":true}',
+      timings: { startedAt: "2026-06-19T00:00:00.000Z", durationMs: 5 },
+    },
+  };
+
+  it("post_verdict_writes_review_artifact", async () => {
+    await persistRun(buildRunEnvelope([stepWithVolatile], { now: () => 0, newId: () => UUID1 }, "cen"), dir!);
+    const base = await start();
+    const res = await fetch(`${base}/runs/${UUID1}/verdict`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "verdict=approved&note=ok",
+      redirect: "manual",
+    });
+    expect(res.status).toBe(303);
+    const artifact = await loadReviewArtifact(UUID1, rdir!);
+    expect(artifact?.verdict.verdict).toBe("approved");
+    expect(artifact?.artifactVersion).toBe(1);
+    expect("timings" in artifact!.steps[0]!.response).toBe(false);
+  });
+
+  it("post_verdict_review_artifact_is_normalized", async () => {
+    await persistRun(buildRunEnvelope([stepWithVolatile], { now: () => 0, newId: () => UUID1 }, "cen"), dir!);
+    const base = await start();
+    await fetch(`${base}/runs/${UUID1}/verdict`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "verdict=rejected",
+    });
+    const artifact = await loadReviewArtifact(UUID1, rdir!);
+    // header volátil "date" foi removido na normalização
+    expect(artifact!.steps[0]!.response.headers["date"]).toBeUndefined();
+    expect(artifact!.steps[0]!.response.headers["content-type"]).toBe("application/json");
   });
 });

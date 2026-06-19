@@ -1,0 +1,201 @@
+agent: review-m3-versionable-persistence-architecture
+review_target: origin/main..develop for plan m3-versionable-persistence
+plan: .claude/knowledge-base/plans/m3-versionable-persistence-plan.md
+reviewed_at: 2026-06-19
+summary_counts:
+  BLOCKER: 0
+  HIGH: 0
+  MEDIUM: 1
+  LOW: 3
+  INFO: 4
+findings:
+  # ---------------------------------------------------------------------------
+  # DIP boundary — VERIFIED CLEAN
+  # ---------------------------------------------------------------------------
+  - id: F-arch-1
+    severity: INFO
+    file: src/core/index.ts
+    line: 44
+    plan_ref: "Architecture boundaries affected (plan L62-64); ADR D5"
+    summary: DIP boundary intacta — core não importa web; web consome core só via index.js.
+    evidence: |
+      `grep -rn 'from "../web' src/core/` → vazio (verificado).
+      stableStringify.ts / normalizeRun.ts / reviewArtifact.ts importam apenas:
+        - runSchema.js (tipos de domínio)
+        - verdict.js (Verdict/VerdictSchema)
+        - node:fs/promises, node:path, zod
+      server.ts (adaptador) importa buildReviewArtifact/saveReviewArtifact/
+      ReviewArtifactSchema de "../core/index.js" — direção web→core correta.
+      Os 3 módulos novos são domínio puro (sem HTTP/server). Composition root
+      (buildWebServer) injeta reviewsDir. Conforme architecture.md §1–§2.
+    recommended_action: Nenhuma ação — fronteira correta.
+
+  - id: F-arch-2
+    severity: INFO
+    file: src/core/stableStringify.ts
+    line: 22
+    plan_ref: "ADR D3; T1.1"
+    summary: stableStringify SRP-puro, zero dep, ordena chaves recursivamente, preserva arrays.
+    evidence: |
+      `JSON.stringify(sortKeys(value), null, 2) + "\n"` — nativo, sem dep (ADR D3 /
+      Rule 9 / parsimony rung 2). sortKeys preserva ordem de array (steps são
+      ordenados — correto) e ordena objetos em todos os níveis. Uma única razão
+      para mudar (SRP). `git diff package.json` vazio — ZERO dep nova confirmado.
+    recommended_action: Nenhuma.
+
+  - id: F-arch-3
+    severity: INFO
+    file: src/web/server.ts
+    line: 156
+    plan_ref: "EC-1 MUST-FIX (plan L405); ADR D5"
+    summary: EC-1 (build+valida em memória ANTES de gravar) implementado na ordem correta.
+    evidence: |
+      ```ts
+      // build + parse em memória PRIMEIRO
+      reviewArtifact = ReviewArtifactSchema.parse(buildReviewArtifact(env, verdict));
+      // ... (ZodError → 400, sem nenhuma escrita)
+      await saveVerdict(verdict, verdictsDir);
+      await saveReviewArtifact(reviewArtifact, reviewsDir);
+      ```
+      A montagem/validação (que normaliza o run e valida o verdict) ocorre ANTES
+      de qualquer I/O de escrita. Um verdict inválido (ZodError) retorna 400 sem
+      criar verdict nem artefato órfão — exatamente o invariante da EC-1.
+    recommended_action: Nenhuma — ordem correta. (Ver F-arch-6 sobre não-atomicidade entre as duas escritas.)
+
+  - id: F-arch-4
+    severity: INFO
+    file: src/core/reviewArtifact.ts
+    line: 46
+    plan_ref: "Coverage Matrix #6 (reuso sem refactor); Baseline Context"
+    summary: Reuso de RunEnvelope/Verdict/RunStep sem mudança de assinatura — aditivo.
+    evidence: |
+      reviewArtifact.ts importa `RunEnvelope` (runSchema.js), `Verdict`/`VerdictSchema`
+      (verdict.js) e reusa `CapturedRequestSchema`/`AssertResultSchema` no
+      NormalizedStepSchema. verdict.ts e runSchema.ts NÃO aparecem no diff de
+      assinatura (só consumidos). buildReviewArtifact embute o Verdict as-is.
+      Backward-compat preservada (M0/M1/M2 inalterados).
+    recommended_action: Nenhuma.
+
+  # ---------------------------------------------------------------------------
+  # MEDIUM — source-of-truth ambiguity entre verdicts/ e reviews/
+  # ---------------------------------------------------------------------------
+  - id: F-arch-5
+    severity: MEDIUM
+    file: .gitignore
+    line: 27
+    plan_ref: "ADR D1 (separação run bruto vs artefato); Q2 (last-write-wins)"
+    summary: >-
+      Verdict duplicado em DOIS locais committáveis (verdicts/{id}.json e o verdict
+      embutido em reviews/{id}.json); o comentário do .gitignore chama verdicts/ de
+      "store ao-vivo" mas verdicts/ NÃO está gitignored — ambiguidade de fonte-de-verdade.
+    evidence: |
+      `git check-ignore verdicts/ reviews/` → exit 1 (NENHUM dos dois é ignorado).
+      .gitignore L27-29:
+        # NOTA (M3): `reviews/` ... é COMMITÁVEL ...
+        # `verdicts/` é o store ao-vivo da web app (M2); o canônico versionado é `reviews/`.
+      O comentário afirma que reviews/ é "o canônico versionado" e implica que
+      verdicts/ é efêmero/live — mas verdicts/ é committável tanto quanto reviews/
+      (não está no .gitignore). Resultado: o mesmo verdict (approved/rejected/note/
+      decidedAt) é persistido em verdicts/{id}.json (M2, JSON.stringify não-estável)
+      E embutido em reviews/{id}.json (M3, stableStringify). Se ambos forem
+      commitados, há duas representações da MESMA decisão, com a possibilidade de
+      divergirem (verdicts/ não é byte-determinístico; decidedAt difere a cada POST
+      por causa de `new Date().toISOString()` no postVerdict — last-write-wins).
+      Isto é uma duplicação de CONHECIMENTO (a decisão humana), não só de código —
+      tensão com DRY (CLAUDE.md §12) e com a heurística de fonte única autoritativa.
+    recommended_action: >-
+      Decidir e documentar explicitamente a intenção: (a) se reviews/ é canônico e
+      verdicts/ é live-only, então gitignore `verdicts/` (como runs/) para que NÃO
+      seja commitado — eliminando a duplicação no git; OU (b) se ambos são
+      intencionalmente versionados, registrar um ADR justificando as duas
+      representações e qual vence em caso de divergência. Hoje o comentário diz uma
+      coisa (verdicts/ é live) e o .gitignore faz outra (verdicts/ é committável).
+      Escopo é pequeno — uma linha no .gitignore ou um ADR de 5 linhas.
+
+  # ---------------------------------------------------------------------------
+  # LOW
+  # ---------------------------------------------------------------------------
+  - id: F-arch-6
+    severity: LOW
+    file: src/web/server.ts
+    line: 169
+    plan_ref: "EC-1; Failure scenarios (plan L522-530)"
+    summary: >-
+      saveVerdict e saveReviewArtifact não são atômicos entre si — falha de I/O na
+      2ª escrita deixa verdict gravado sem o artefato correspondente.
+    evidence: |
+      ```ts
+      await saveVerdict(verdict, verdictsDir);        // escrita 1
+      await saveReviewArtifact(reviewArtifact, reviewsDir);  // escrita 2
+      ```
+      Se saveReviewArtifact falhar (ex.: disco cheio, EACCES em reviewsDir após
+      verdictsDir ter sucedido), o verdict fica persistido mas o artefato
+      versionável não — estado parcialmente-escrito. Propaga → 500 (Rule 8, não
+      engole — correto), e ambas são last-write-wins (retry idempotente — mitiga).
+      O plano (L405-408) reconhece "ambas as escritas são last-write-wins
+      (idempotente no retry)" mas não trata a janela entre as duas.
+    recommended_action: >-
+      Aceitável para o modelo local single-user de M3 (retry corrige), mas
+      documentar como risco conhecido em Drawbacks & Risks (já há tabela; falta
+      esta linha). Para M5+ considerar inverter a ordem (artefato canônico primeiro)
+      ou um write-then-rename. Não bloqueia.
+
+  - id: F-arch-7
+    severity: LOW
+    file: src/core/reviewArtifact.ts
+    line: 63
+    plan_ref: "T2.1; saveReviewArtifact contract"
+    summary: Validação dupla — server.ts já faz ReviewArtifactSchema.parse e saveReviewArtifact re-parsa.
+    evidence: |
+      server.ts:161 → `ReviewArtifactSchema.parse(buildReviewArtifact(...))`
+      reviewArtifact.ts:63 (saveReviewArtifact) → `ReviewArtifactSchema.parse(artifact)`
+      O mesmo objeto é validado duas vezes no caminho do POST. A 2ª validação é
+      defensiva e legítima como invariante de fronteira do core (qualquer caller de
+      saveReviewArtifact deveria validar) — mas é redundante no único caller atual.
+      Custo: trivial (objeto pequeno). Não é bug, é leve sobreposição.
+    recommended_action: >-
+      Manter a validação no core (fronteira correta) e remover o parse explícito em
+      server.ts:161 SE a única intenção lá for validar — porém server.ts precisa do
+      ZodError para mapear 400 ANTES de saveVerdict (EC-1). Logo a duplicação é
+      JUSTIFICADA: o parse no web é o gate do 400/EC-1; o parse no core é o invariante
+      de qualquer caller futuro. Documentar com um comentário de 1 linha em server.ts
+      explicando por que parsa cedo. Sem mudança funcional.
+
+  - id: F-arch-8
+    severity: LOW
+    file: src/core/normalizeRun.ts
+    line: 23
+    plan_ref: "T1.2 / T1.3 (shape do step normalizado)"
+    summary: >-
+      Shape do step normalizado declarado em DOIS lugares — interface NormalizedStep
+      (normalizeRun.ts) e NormalizedStepSchema zod (reviewArtifact.ts) — risco de drift.
+    evidence: |
+      normalizeRun.ts:23-33 define `interface NormalizedStep { request; response{
+      status,statusText,headers,body }; asserts?; captures? }`.
+      reviewArtifact.ts:17-27 define `NormalizedStepSchema = z.object({ request:
+      CapturedRequestSchema, response: z.object({status,statusText,headers,body}),
+      asserts?, captures? })`.
+      As duas descrevem a MESMA forma. Se um campo for adicionado ao step
+      normalizado, é preciso editar os dois — duplicação de conhecimento estrutural
+      (DRY). Hoje estão consistentes (verificado), e `z.infer<NormalizedStepSchema>`
+      não é reexportado para casar com NormalizedStep.
+    recommended_action: >-
+      Opcional (não bloqueia): definir NormalizedStepSchema/NormalizedRunSchema em
+      normalizeRun.ts (junto da lógica que os produz) e derivar `type NormalizedStep
+      = z.infer<...>`, reusando no reviewArtifact.ts — fonte única do shape. Regra-de-3
+      ainda não atingida (2 ocorrências), então pode aguardar; registrar como nota.
+
+  - id: F-arch-9
+    severity: INFO
+    file: src/core/normalizeRun.ts
+    line: 9
+    plan_ref: "ADR D2; risco #1"
+    summary: VOLATILE_HEADERS lista explícita/inspecionável; normalizeRun não muta o input.
+    evidence: |
+      VOLATILE_HEADERS é `ReadonlySet<string>` const exportada (transparência —
+      ADR D2). normalizeStep faz copy (`{...step.request, headers:{...}}`,
+      `normalizeHeaders` retorna novo objeto) — não muta env (invariante T1.2
+      "NUNCA muta o input", coberto por teste normalize_run_does_not_mutate_input).
+      Headers de request NÃO são normalizados (só response) — correto, request é
+      input determinístico. SRP: módulo só normaliza.
+    recommended_action: Nenhuma.
