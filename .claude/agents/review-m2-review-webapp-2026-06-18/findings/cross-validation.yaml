@@ -1,0 +1,163 @@
+agent: review-m2-review-webapp-cross-validation
+review_target: origin/main..develop for plan m2-review-webapp
+plan: .claude/knowledge-base/plans/m2-review-webapp-plan.md
+reviewed_at: 2026-06-18
+verdict: READY_TO_MERGE
+
+plan_tasks_summary:
+  total_tasks: 6        # T1.1 T1.2 T1.3 T2.1 T2.2 T3.1
+  fully_implemented: 6
+  partial: 0
+  missing: 0
+  diverged: 0
+
+acceptance_criteria_summary:
+  total: 18             # AC bullets across the 6 tasks
+  satisfied: 18
+  unverified: 0
+  false_claims: 0
+
+adr_compliance:
+  total_adrs: 5         # D1 D2 D3 D4 D5
+  respected: 5
+  diverged_without_new_adr: 0
+
+plan_drift:
+  plan_edited_after_implement: false
+  details: >
+    Plan committed at b6245f6 (2026-06-18 19:27). First M2 implementation commit
+    ec2928b at 20:38 — ~71 min later. Plan file has a single commit in its history
+    (no post-implement edits). Contract frozen since /implement start.
+
+task_to_commit_status:
+  - task: T1.1 (envelope name? + runScenario popula)
+    commit: ec2928b
+    status: FULLY
+    evidence: >
+      runSchema.ts:57 name: z.string().optional(); runStore.ts buildRunEnvelope(steps,deps,name?)
+      with conditional spread (...(name!==undefined?{name}:{})); runScenario.ts:44 passes scenario.name.
+      Tests build_run_envelope_includes_name_when_provided + _omits_name_when_absent green.
+  - task: T1.2 (verdict store zod + save/load)
+    commit: ec2928b
+    status: FULLY
+    evidence: >
+      verdict.ts — VerdictSchema {runId,verdict enum approved/rejected,note?,decidedAt};
+      saveVerdict parses BEFORE write (frontier); loadVerdict ENOENT->null, invalid->throw.
+      4 RED tests green; coverage verdict.ts 92.3% stmts (>=90% AC).
+  - task: T1.3 (pickRenderer + truncate)
+    commit: ec2928b
+    status: FULLY
+    evidence: >
+      render.ts pickRenderer(json/text/binary, case-insensitive via /i regex, undefined->binary fallback);
+      truncate(s,max=65536); bodyBlock uses both, JSON pretty-print with cru fallback, binary never embedded.
+      6 pickRenderer tests green.
+  - task: T2.1 (GET / listing)
+    commit: 41e8b0f
+    status: FULLY
+    evidence: >
+      server.ts listRuns (readdir + UUID filter + EC-2 try/catch skip corrupt + loadVerdict + passFail + sort desc mtime);
+      render.ts renderListing (name/runId/createdAt/steps/pass-fail seal/verdict, "no runs yet" empty, "(sem cenário)"/"pendente").
+      Tests web_server_root_lists_runs, listing_skips_corrupt_run_file, render_run_shows_verdict_form... green.
+  - task: T2.2 (verdict form + POST /runs/:id/verdict)
+    commit: 41e8b0f
+    status: FULLY
+    evidence: >
+      server.ts postVerdict (RUN_ID_RE anti-traversal->400; loadRun exists?->404; readBody cap 1MB;
+      URLSearchParams; saveVerdict catch->400; 303 Location). render.ts verdictForm + verdictBadge (EC-1 escapeHtml on note).
+      7 RED tests green (persist/303, invalid 400, missing-field 400, missing-run 404, traversal 400, form, escape-note).
+  - task: T3.1 (E2E + CHANGELOG)
+    commit: a3d7bd8
+    status: FULLY
+    evidence: >
+      review-e2e.test.ts e2e_review_lists_renders_and_records_verdict green (run->GET / pendente->GET /runs/:id asserts+form
+      ->POST 303->loadVerdict==approved->reload approved). CHANGELOG [Unreleased] § Added M2 entry present.
+
+dod_roadmap_to_evidence:
+  - dod: "1 — web app lista cenários/execuções + por step req/resp/headers + asserts/resultado"
+    status: SATISFIED
+    evidence: >
+      GET / renderListing (T2.1) + GET /runs/:id renderRun -> requestSection/responseSection (method,url,headers,body)
+      + assertsTable (✓PASS/✗FAIL) per step (reuso M1). Verified by web_server_root_lists_runs +
+      render_run_includes_method_url_and_status + render_run_lists_request_and_response_headers + E2E.
+  - dod: "2 — humano registra verdict (aprovado/rejeitado + nota) persistido"
+    status: SATISFIED
+    evidence: >
+      POST /runs/:id/verdict -> saveVerdict -> verdicts/{runId}.json (T1.2+T2.2). E2E asserts loadVerdict==approved
+      and note=='revisado ok' after POST. Runtime-metric proof = loadVerdict != null post-POST.
+  - dod: "3 — pass/fail por assert visualmente evidente"
+    status: SATISFIED
+    evidence: >
+      render.ts assertsTable rows class pass/fail; CSS tr.pass td green #137333 / tr.fail td red #b00020 + bg #fdecef;
+      listing pf-pass/pf-fail seal. Verified render_run_shows_assert_pass_and_fail.
+
+goal_metric:
+  test: e2e_review_lists_renders_and_records_verdict
+  status: GREEN
+  command: npx vitest run src/review-e2e.test.ts (1 passed)
+
+backward_compat_m0_m1:
+  status: PRESERVED
+  evidence: >
+    mcp/server.ts:53 run_request still calls buildRunEnvelope([step]) (no name) — 3rd param optional, no break.
+    runScenario calls buildRunEnvelope(steps,deps,scenario.name). schemaVersion stays literal 1.
+    GET /runs/:id preserved. Full suite 87/87 green incl. all M0/M1 tests. RUN_ID_RE anti-traversal (EC-1 M0) reused.
+
+validation_chain_rerun:
+  npm_test: "87 passed (17 files) — PASS"
+  typecheck: "tsc --noEmit — 0 errors — PASS"
+  npm_audit: "found 0 vulnerabilities — PASS"
+  coverage: "overall 96.37% stmts; verdict.ts 92.3% (>=90% AC); render.ts 95.23% — PASS"
+  file_size_budget: "all touched files <= 500 LoC (render.ts 259 largest) — PASS"
+
+findings:
+  - id: F-xval-1
+    severity: INFO
+    file: vitest.config.ts
+    line: 10
+    plan_ref: T2.2 DoD / Final Phase coverage
+    summary: >
+      src/web/server.ts is excluded from coverage instrumentation (exclude pattern
+      "src/**/server.ts"). The verdict POST routing / readBody / listRuns adapter logic
+      therefore shows no line-coverage number.
+    evidence: |
+      vitest.config.ts: exclude: ["src/**/*.test.ts", "src/**/server.ts"]
+      Plan AC for T2.2/Final Phase only require >=90% on verdict.ts + pickRenderer (helpers),
+      NOT on the adapter. server.ts is nonetheless exercised by 12 integration tests
+      (server.test.ts) + the E2E (review-e2e.test.ts). This matches the M0/M1 convention
+      (mcp/server.ts also excluded) — accepted adapter-entrypoint pattern, not a divergence.
+    recommended_action: >
+      No action required for M2 merge. Optional follow-up: drop the server.ts coverage
+      exclusion so adapter branch-coverage is measurable, since web/server.ts now carries
+      real routing/validation logic (POST/404/400/405) beyond a thin entrypoint.
+
+  - id: F-xval-2
+    severity: INFO
+    file: src/web/server.ts
+    line: 117
+    plan_ref: T2.2 Deep Dives (verdict cru do form; VerdictSchema valida na fronteira)
+    summary: >
+      params.get("verdict") is cast `as Verdict["verdict"]` before VerdictSchema.parse.
+      This is the planned pattern (the cast is a TS convenience; zod is the real frontier
+      guard, and the catch returns 400). Verified by post_verdict_invalid_value_is_400 +
+      post_verdict_missing_field_is_400 (null cast -> zod throws -> 400, nothing written).
+    evidence: |
+      verdict: params.get("verdict") as Verdict["verdict"]  // raw form value
+      saveVerdict(...) inside try/catch -> 400 on ZodError.
+    recommended_action: >
+      None — matches plan ADR D3 "VerdictSchema valida na fronteira". No type-safety hole:
+      invalid/missing values are rejected at runtime with 400, proven by tests.
+
+  - id: F-xval-3
+    severity: INFO
+    file: .claude/knowledge-base/plans/m2-review-webapp-plan.md
+    line: 587
+    plan_ref: Global DoD "Plan archived"
+    summary: >
+      Plan still resides in knowledge-base/plans/ (not moved to completed/). The DoD
+      explicitly conditions the move on "/review READY_TO_MERGE + merge do PR", so this
+      is correctly NOT yet done at review time.
+    evidence: "- [ ] **Plan archived** — mover para knowledge-base/plans/completed/ após /review READY_TO_MERGE + merge do PR"
+    recommended_action: "None — pending step belongs to cycle-release, not this review."
+
+blockers: []
+high: []

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { ZodError } from "zod";
 import {
   loadRun,
   loadVerdict,
@@ -22,6 +23,19 @@ import { renderRun, renderListing, type ListingItem } from "./render.js";
 // EC-1 (M0): id da URL é input do usuário — allowlist UUID antes de montar path (anti path-traversal).
 const RUN_ID_RE = /^[0-9a-f-]{36}$/i;
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MB — cap do body do POST de verdict.
+
+/** Body excedeu o limite → mapeado para 413 (F-dom-1), não 500. */
+class PayloadTooLargeError extends Error {
+  override readonly name = "PayloadTooLargeError";
+}
+
+const r405 = (allow: string): Reply => ({
+  status: 405,
+  contentType: "text/plain",
+  body: "method not allowed",
+  allow,
+});
+const r400 = (msg: string): Reply => ({ status: 400, contentType: "text/plain", body: msg });
 
 interface Reply {
   status: number;
@@ -55,28 +69,28 @@ async function route(req: IncomingMessage, dir: string, verdictsDir: string): Pr
   const method = req.method ?? "GET";
   const path = (req.url ?? "/").split("?")[0] ?? "/";
 
-  // POST /runs/:id/verdict — registro do verdict humano.
-  const verdictMatch = /^\/runs\/([^/]+)\/verdict$/.exec(path);
-  if (verdictMatch) {
-    if (method !== "POST") {
-      return { status: 405, contentType: "text/plain", body: "method not allowed", allow: "POST" };
-    }
-    return postVerdict(verdictMatch[1]!, req, dir, verdictsDir);
-  }
-
-  if (method !== "GET") {
-    return { status: 405, contentType: "text/plain", body: "method not allowed", allow: "GET" };
-  }
+  // Resolve a ROTA primeiro; o método é checado por rota conhecida (F-dom-2: rota
+  // inexistente → 404, não 405). O `:id` é validado antes do método (F-dom-3).
 
   if (path === "/") {
+    if (method !== "GET") return r405("GET");
     const items = await listRuns(dir, verdictsDir);
     return { status: 200, contentType: "text/html; charset=utf-8", body: renderListing(items) };
   }
 
-  const runMatch = /^\/runs\/(.+)$/.exec(path);
+  const verdictMatch = /^\/runs\/([^/]+)\/verdict$/.exec(path);
+  if (verdictMatch) {
+    const id = verdictMatch[1]!;
+    if (!RUN_ID_RE.test(id)) return r400("bad id");
+    if (method !== "POST") return r405("POST");
+    return postVerdict(id, req, dir, verdictsDir);
+  }
+
+  const runMatch = /^\/runs\/([^/]+)$/.exec(path);
   if (runMatch) {
     const id = runMatch[1]!;
-    if (!RUN_ID_RE.test(id)) return { status: 400, contentType: "text/plain", body: "bad id" };
+    if (!RUN_ID_RE.test(id)) return r400("bad id");
+    if (method !== "GET") return r405("GET");
     try {
       const env = await loadRun(join(dir, `${id}.json`));
       const verdict = await loadVerdict(id, verdictsDir);
@@ -108,7 +122,16 @@ async function postVerdict(
     }
     throw err;
   }
-  const body = await readBody(req);
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch (err) {
+    // F-dom-1: body grande é erro do CLIENTE → 413, não 500.
+    if (err instanceof PayloadTooLargeError) {
+      return { status: 413, contentType: "text/plain", body: "payload too large" };
+    }
+    throw err;
+  }
   const params = new URLSearchParams(body);
   const note = params.get("note") ?? undefined;
   const verdict: Verdict = {
@@ -120,29 +143,44 @@ async function postVerdict(
   };
   try {
     await saveVerdict(verdict, verdictsDir);
-  } catch {
-    // EC-3: verdict inválido/ausente → 400 (não grava).
-    return { status: 400, contentType: "text/plain", body: "invalid verdict" };
+  } catch (err) {
+    // F-arch-1: SÓ erro de validação (cliente) vira 400; falha de I/O sobe (→ 500).
+    if (err instanceof ZodError) return r400("invalid verdict");
+    throw err;
   }
   return { status: 303, contentType: "text/plain", body: "", location: `/runs/${id}` };
 }
 
-/** Lê o body com cap de tamanho (anti-abuso). */
+/** Lê o body com cap de tamanho (anti-abuso). Em overflow, drena o restante
+ * (sem bufferizar) para que a resposta 413 ainda possa ser escrita. */
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let done = false;
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => {
+      if (done) return; // já estourou — descarta o resto
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error("body too large"));
-        req.destroy();
+        done = true;
+        req.resume(); // drena o body restante para liberar o socket p/ a resposta
+        reject(new PayloadTooLargeError("body too large"));
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    req.on("end", () => {
+      if (!done) {
+        done = true;
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      }
+    });
+    req.on("error", (err) => {
+      if (!done) {
+        done = true;
+        reject(err);
+      }
+    });
   });
 }
 
@@ -195,7 +233,9 @@ function passFail(env: RunEnvelope): boolean | null {
 async function main(): Promise<void> {
   const port = Number(process.env.HODOR_WEB_PORT ?? 4000);
   const server = buildWebServer();
-  server.listen(port, () => {
+  // F-sec-5: bind explícito em loopback — alinha ao modelo de ameaça local single-user
+  // (todos os riscos aceitos — CSRF, leak no 500 — assumem que não há rede).
+  server.listen(port, "127.0.0.1", () => {
     console.error(`hodor web review app on http://127.0.0.1:${port}`);
   });
 }

@@ -32,7 +32,8 @@ export function escapeHtml(s: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;"); // F-sec-1: escapa também aspas simples (atributos single-quoted)
 }
 
 /**
@@ -193,9 +194,6 @@ export function renderRun(env: RunEnvelope, verdict: Verdict | null = null): str
     .verdict-form { margin: 1rem 0; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
     .verdict-form textarea { font-family: inherit; flex: 1; min-width: 200px; }
     a { color: #0b66c3; }
-    table.listing { border-collapse: collapse; width: 100%; font-size: .85rem; }
-    table.listing td, table.listing th { border: 1px solid #e0e0e0; padding: 4px 10px; text-align: left; }
-    .pf-pass { color: #137333; font-weight: 700; } .pf-fail { color: #b00020; font-weight: 700; }
   </style>
 </head>
 <body>

@@ -1,0 +1,235 @@
+agent: review-m2-review-webapp-domain-api-design
+review_target: main..HEAD for plan m2-review-webapp
+domain: api-design
+domain_specific_patterns_checked:
+  - "status-codes-per-RFC-9110 (200/303/400/404/405/413/500)"
+  - "PRG pattern (POST verdict -> 303 See Other)"
+  - "405 Method Not Allowed with Allow header (RFC 9110 §15.5.6)"
+  - "form url-encoded parse (URLSearchParams: empty body, multi-value, missing content-type)"
+  - "body size cap rejection semantics (1MB)"
+  - "HTML form validity (method=post, action, radio required)"
+  - "listing/run page HTML validity + accessibility"
+  - "route design scalability for M3/M4"
+findings:
+  - id: F-dom-1
+    severity: HIGH
+    file: src/web/server.ts
+    line: 137
+    plan_ref: T2.2 Deep Dives "cap de tamanho do body (ex. 1 MB)"; plan Failure scenarios table
+    domain_anchor: RFC 9110 §15.5.14 (413 Content Too Large) vs §15.6.1 (500 Internal Server Error)
+    summary: >
+      readBody rejeita o body com `new Error("body too large")` quando excede 1 MB.
+      Essa rejeição propaga pela promise de route() até o `.catch` genérico em
+      buildWebServer (server.ts:47-50), que responde **500 internal error**. Um body
+      grande demais é erro do CLIENTE (input que viola um limite do servidor), não
+      falha interna do servidor — a resposta correta por RFC é **413 Content Too
+      Large**. Além disso o 500 vaza a mensagem `body too large` no corpo (acoplando
+      diagnóstico interno à resposta) e classifica mau-input como erro de servidor,
+      poluindo métricas/observabilidade (5xx alerta on-call à toa).
+    evidence: |
+      ```ts
+      // server.ts:135-140 — readBody
+      req.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_BODY_BYTES) {
+          reject(new Error("body too large"));   // <-- propaga p/ catch genérico
+      // server.ts:47-50 — catch em buildWebServer
+      .catch((err: unknown) => {
+        res.writeHead(500, { "content-type": "text/plain" });          // <-- 413 esperado
+        res.end(`internal error: ${err instanceof Error ? err.message : "unknown"}`);
+      });
+      ```
+      O plano lista o cap de 1 MB como mitigação anti-abuso, mas NÃO especifica o
+      status; nenhum teste cobre o caminho do body grande (lacuna correlata —
+      reportada separadamente pelo tests reviewer). Resultado observável: POST de
+      verdict com body > 1 MB -> 500 (deveria 413).
+    recommended_action: >
+      Sinalizar o estouro de cap como um erro tipado (ex. classe BodyTooLargeError
+      ou um símbolo discriminável) e tratá-lo no route()/catch para responder
+      `413` com corpo neutro ("request body too large"), sem ecoar a mensagem
+      interna. Adicionar RED test `post_verdict_body_too_large_is_413` que envia
+      > 1 MB e espera 413. Mantém fail-fast (Unbreakable Rule 8) classificando o
+      erro corretamente como 4xx (culpa do cliente), não 5xx.
+
+  - id: F-dom-2
+    severity: MEDIUM
+    file: src/web/server.ts
+    line: 67
+    plan_ref: D5 "POST aceito só no path de verdict (outros POST -> 405)"
+    domain_anchor: RFC 9110 §15.5.5 (404) vs §15.5.6 (405 Method Not Allowed)
+    summary: >
+      Para QUALQUER path que não seja `/` nem casa `^/runs/(.+)$` nem o path de
+      verdict, um método != GET retorna **405 Allow: GET** (server.ts:67-69) ANTES
+      de checar se o recurso existe. Ex.: `POST /favicon.ico`, `DELETE /qualquer`
+      -> 405, mas sob GET esse mesmo path retornaria 404 (server.ts:92). 405
+      afirma "o recurso existe, mas o método não é suportado nele"; para um path
+      inexistente o servidor está afirmando existência que não há. O comportamento
+      correto é 404 para recursos inexistentes independentemente do método. O 405
+      genérico só é correto para paths que EXISTEM como recurso (`/`, `/runs/:id`).
+    evidence: |
+      ```ts
+      // server.ts:67-69 — guard de método global, antes do dispatch de path
+      if (method !== "GET") {
+        return { status: 405, contentType: "text/plain", body: "method not allowed", allow: "GET" };
+      }
+      // -> POST /inexistente devolve 405 Allow: GET (deveria 404)
+      ```
+      O teste `web_server_returns_405_with_allow_header` (server.test.ts:74-79) usa
+      `POST /runs/x` — `x` não é UUID, então sob GET seria 400; o 405 aqui é
+      defensável. Mas o guard é amplo demais para paths verdadeiramente inexistentes.
+    recommended_action: >
+      Mover o guard de método para DEPOIS de resolver o recurso: só emitir 405
+      (com Allow correto por recurso) quando o path casa um recurso conhecido mas o
+      método não é permitido; caso contrário 404. Para `/` o Allow é "GET"; para
+      `/runs/:id` o Allow é "GET" (e "POST" só no sub-path /verdict). Isso evita
+      vazar existência e alinha a RFC 9110.
+
+  - id: F-dom-3
+    severity: MEDIUM
+    file: src/web/server.ts
+    line: 62
+    plan_ref: T2.2 "POST /runs/:id/verdict"; D5
+    domain_anchor: RFC 9110 §15.5.6 — "Allow header field MUST be generated containing methods the target resource currently supports"
+    summary: >
+      No path `/runs/:id/verdict`, um método != POST devolve `Allow: POST`
+      (server.ts:62) — correto. Porém o `:id` NÃO é validado contra RUN_ID_RE neste
+      ramo 405: `GET /runs/..%2f../verdict` casa o verdictMatch e responde 405
+      Allow: POST sem rejeitar o id malformado. Não é traversal explorável (nenhum
+      fs é tocado no 405), mas é inconsistência de contrato: o mesmo `:id` inválido
+      retorna 400 no POST (server.ts:101) e 405 em outros métodos. O cliente recebe
+      sinal contraditório sobre a validade do recurso.
+    evidence: |
+      ```ts
+      // server.ts:59-64
+      const verdictMatch = /^\/runs\/([^/]+)\/verdict$/.exec(path);
+      if (verdictMatch) {
+        if (method !== "POST") {
+          return { status: 405, ... allow: "POST" };   // <-- não checa RUN_ID_RE
+        }
+        return postVerdict(verdictMatch[1]!, req, dir, verdictsDir);  // 400 se id ruim
+      }
+      ```
+    recommended_action: >
+      Validar RUN_ID_RE no topo do ramo verdictMatch (antes do check de método):
+      id inválido -> 400 independentemente do método. Mantém o contrato do `:id`
+      uniforme entre GET/POST/outros e remove a contradição 400-vs-405.
+
+  - id: F-dom-4
+    severity: LOW
+    file: src/web/server.ts
+    line: 111
+    plan_ref: T2.2 Deep Dives "new URLSearchParams(body); extrai verdict + note"
+    domain_anchor: WHATWG URL — URLSearchParams.get() retorna o PRIMEIRO valor de chaves repetidas
+    summary: >
+      O parse usa `params.get("verdict")` / `params.get("note")` — em form com chave
+      repetida (`verdict=approved&verdict=rejected`) apenas o primeiro valor é
+      considerado, silenciosamente ignorando o resto. Body vazio e content-type
+      ausente são tratados corretamente (URLSearchParams("") -> sem chaves ->
+      verdict=null -> zod 400; o parse independe do content-type header). O risco é
+      só o multi-value silencioso: não há erro nem log quando o cliente envia
+      ambíguo. Aceitável para single-user local (M2), mas é uma decisão implícita
+      não documentada.
+    evidence: |
+      ```ts
+      // server.ts:112-117
+      const params = new URLSearchParams(body);
+      const note = params.get("note") ?? undefined;
+      verdict: params.get("verdict") as Verdict["verdict"],   // primeiro valor; resto ignorado
+      ```
+      Body vazio: `new URLSearchParams("").get("verdict")` === null -> cast -> zod
+      rejeita -> 400 (coberto por `post_verdict_missing_field_is_400`). Correto.
+    recommended_action: >
+      Documentar (comentário ou Drawbacks) que chaves repetidas usam o primeiro
+      valor; opcionalmente rejeitar com 400 quando getAll("verdict").length > 1.
+      Não-bloqueante para M2 single-user.
+
+  - id: F-dom-5
+    severity: LOW
+    file: src/web/render.ts
+    line: 152
+    plan_ref: T2.2 "verdictForm (radio approved/rejected + textarea note + submit)"
+    domain_anchor: HTML Living Standard — radio group `required` semantics + label association
+    summary: >
+      O form é válido (method=post, action escapado, submit presente) e o `required`
+      no primeiro radio do grupo `verdict` torna a seleção obrigatória (HTML aplica
+      required ao grupo inteiro — bom). Dois pontos de acessibilidade/robustez:
+      (1) os `<label>` envolvem o input (associação implícita OK), mas a `<textarea
+      name='note'>` não tem `<label>` associado nem aria-label — só placeholder, que
+      não substitui label para leitores de tela; (2) sem atributo `maxlength` na
+      textarea, o cliente pode digitar > 1 MB e cair no caminho do body grande
+      (relaciona F-dom-1). Não há aviso de validação client-side para o note.
+    evidence: |
+      ```html
+      <!-- render.ts:151-157 -->
+      <label><input type='radio' name='verdict' value='approved' required /> Aprovar</label>
+      <label><input type='radio' name='verdict' value='rejected' /> Rejeitar</label>
+      <textarea name='note' rows='2' placeholder='nota (opcional)'></textarea>  <!-- sem label/aria-label -->
+      ```
+    recommended_action: >
+      Associar a textarea a um `<label for=...>` ou adicionar `aria-label='nota'`;
+      considerar `maxlength` na textarea como defesa em profundidade contra o body
+      grande. Acessibilidade é guardrail (parsimony-ladder § Never on the chopping
+      block), não opcional, mas o impacto é baixo (single-user local).
+
+  - id: F-dom-6
+    severity: LOW
+    file: src/web/render.ts
+    line: 203
+    plan_ref: D5; ROADMAP §M2 "pass/fail visualmente evidente"
+    domain_anchor: HTML semantics + WCAG 1.4.1 (não usar só cor para transmitir informação)
+    summary: >
+      Tanto na listagem (render.ts:224-229) quanto na página do run (asserts pass/fail
+      via classes CSS de cor) o pass/fail combina ícone (✓/✗) COM cor — bom, não
+      depende só de cor (WCAG 1.4.1 satisfeito). Defeito menor de HTML: a página do
+      run tem `<h1>` seguido por `<h2>Step N</h2>` e dentro `<h3>Request/Response/
+      Asserts/Captures</h3>` — hierarquia de headings consistente (bom). Porém o
+      bloco de estilo da página do run (render.ts:196-198) DUPLICA regras
+      `table.listing` / `.pf-pass` / `.pf-fail` que só são usadas na listagem
+      (renderListing tem seu próprio LISTING_STYLE) — CSS morto na página de run.
+      Não afeta correção HTTP, mas é ruído que escala mal (M3/M4 vão crescer o CSS
+      inline duplicado).
+    evidence: |
+      ```css
+      /* render.ts:196-198 — dentro do <style> de renderRun (página de run) */
+      table.listing { ... }   /* listing não é renderizada nesta página */
+      .pf-pass { color: #137333; font-weight: 700; } .pf-fail { ... }
+      ```
+      `renderListing` define LISTING_STYLE próprio (render.ts:212-218) com as mesmas
+      classes — a cópia em renderRun nunca casa elementos.
+    recommended_action: >
+      Remover as regras de listing do `<style>` de renderRun (CSS morto) OU extrair
+      um bloco de estilo compartilhado. Para M3/M4 (mais páginas), considerar uma
+      única função de layout/head compartilhada para não duplicar `<style>` inline
+      por página (DRY de conhecimento de apresentação).
+
+  - id: F-dom-7
+    severity: INFO
+    file: src/web/server.ts
+    line: 76
+    plan_ref: D5; Baseline "design de rotas escala para M3/M4"
+    domain_anchor: REST resource modeling / route table maintainability
+    summary: >
+      Avaliação de escalabilidade do design de rotas para M3/M4. O roteamento é uma
+      cadeia de if/regex inline em route() — funciona para 3 rotas (M2) mas tem dois
+      riscos de crescimento: (1) a ordem importa silenciosamente (verdictMatch antes
+      do guard de método antes de `/runs/(.+)`); um path novo mal posicionado pode
+      ser capturado pela regex gulosa `^/runs/(.+)$` (que casa inclusive
+      `/runs/x/verdict` se o verdictMatch fosse removido); (2) o método e o recurso
+      são checados em pontos diferentes (guard global GET em :67, POST especial em
+      :60), o que já gerou F-dom-2/F-dom-3. M3 (run normalizado/versionável) e M4
+      provavelmente adicionam GET /runs/:id/versions, POST /runs/:id/rerun etc. —
+      uma tabela de rotas {method, pattern, handler} explícita escala melhor que a
+      cadeia atual.
+    evidence: |
+      ```ts
+      // route(): dispatch implícito por ordem
+      const verdictMatch = /^\/runs\/([^/]+)\/verdict$/.exec(path);   // 1
+      if (method !== "GET") { ... 405 ... }                          // 2 (global)
+      if (path === "/") { ... }                                       // 3
+      const runMatch = /^\/runs\/(.+)$/.exec(path);                   // 4 (guloso)
+      ```
+    recommended_action: >
+      Não-bloqueante para M2 (3 rotas, KISS). Para M3/M4, refatorar para uma tabela
+      de rotas declarativa que case (method, pattern) juntos e derive o Allow header
+      por recurso a partir dos métodos registrados naquele pattern — resolve
+      F-dom-2 e F-dom-3 estruturalmente em vez de pontualmente.

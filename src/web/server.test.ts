@@ -72,10 +72,18 @@ describe("web server — runs + render", () => {
   });
 
   it("web_server_returns_405_with_allow_header", async () => {
+    // POST a um recurso de run (GET-only) com id VÁLIDO → 405 allow GET (F-dom-3)
     const base = await start();
-    const res = await fetch(`${base}/runs/x`, { method: "POST" });
+    const res = await fetch(`${base}/runs/${UUID1}`, { method: "POST" });
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("GET");
+  });
+
+  it("web_server_unknown_path_is_404_not_405", async () => {
+    // F-dom-2: rota inexistente → 404 (não 405), mesmo com método não-GET
+    const base = await start();
+    expect((await fetch(`${base}/foo`, { method: "POST" })).status).toBe(404);
+    expect((await fetch(`${base}/foo`)).status).toBe(404);
   });
 });
 
@@ -154,6 +162,19 @@ describe("web server — M2 verdict (POST)", () => {
     const base = await start();
     const res = await fetch(`${base}/runs/..%2fx/verdict`, { method: "POST", body: "verdict=approved" });
     expect(res.status).toBe(400);
+  });
+
+  it("post_verdict_body_too_large_is_413", async () => {
+    // F-dom-1: body > 1MB → 413 (erro do cliente), não 500
+    await persistSample(UUID1);
+    const base = await start();
+    const big = "verdict=approved&note=" + "x".repeat(1024 * 1024 + 10);
+    const res = await fetch(`${base}/runs/${UUID1}/verdict`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: big,
+    });
+    expect(res.status).toBe(413);
   });
 
   it("get_run_shows_verdict_form", async () => {
