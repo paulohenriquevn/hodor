@@ -21,6 +21,11 @@ export interface CheckResult {
   status: CheckStatus;
   diff: RunDiff | null;
   run: RunEnvelope;
+  /** runId do golden comparado (F-dom-4: o agente busca o diff completo via web). */
+  goldenRunId: string | null;
+  /** as regras de noise diferem entre o golden e o cenário atual (F-dom-1): mesmo
+   * com status `ok`, uma regressão pode ter sido mascarada — sinal p/ o agente revisar. */
+  noiseChanged: boolean;
 }
 
 export interface CheckScenarioOptions {
@@ -37,7 +42,13 @@ export async function checkScenario(scenario: Scenario, options: CheckScenarioOp
   // Golden é buscado entre os runs JÁ existentes — o run novo (sem verdict) nunca
   // é seu próprio baseline (EC-3); o core não persiste.
   const golden = await findGoldenRun(scenarioKey(run), runsDir, verdictsDir);
-  if (golden === null) return { status: "no_baseline", diff: null, run };
+  if (golden === null) return { status: "no_baseline", diff: null, run, goldenRunId: null, noiseChanged: false };
   const diff = diffRuns(golden, run);
-  return { status: diff.hasRegression ? "regression" : "ok", diff, run };
+  return {
+    status: diff.hasRegression ? "regression" : "ok",
+    diff,
+    run,
+    goldenRunId: golden.runId,
+    noiseChanged: diff.noiseChanged,
+  };
 }

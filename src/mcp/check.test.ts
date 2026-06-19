@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { buildServer } from "./server.js";
+import { buildServer, getCheckCount, getReplayCount } from "./server.js";
 import { runScenario, persistRun, saveVerdict, saveDraft, type Scenario, type Provenance } from "../core/index.js";
 
 let target: Server | undefined;
@@ -62,9 +62,9 @@ describe("mcp check_scenario / replay_suite (M6)", () => {
     await makeGolden();
     serverValue = "CHANGED";
     const client = await connected();
-    const res = (await client.callTool({ name: "check_scenario", arguments: scenario() })) as { structuredContent?: { status: string; hasRegression: boolean } };
+    const res = (await client.callTool({ name: "check_scenario", arguments: scenario() })) as { structuredContent?: { status: string; goldenRunId: string | null } };
     expect(res.structuredContent?.status).toBe("regression");
-    expect(res.structuredContent?.hasRegression).toBe(true);
+    expect(res.structuredContent?.goldenRunId).toBe("golden-1"); // F-dom-4: agente sabe o golden p/ buscar o diff
     await client.close();
   });
 
@@ -75,6 +75,23 @@ describe("mcp check_scenario / replay_suite (M6)", () => {
     await client.callTool({ name: "check_scenario", arguments: scenario() });
     expect((await readdir(runsDir!)).length).toBeGreaterThan(1); // run novo persistido
     expect((await readdir(verdictsDir!)).length).toBe(before); // nenhum verdict novo (não auto-aprova)
+    await client.close();
+  });
+
+  it("check_scenario_tool_increments_metric", async () => {
+    await makeGolden();
+    const before = getCheckCount();
+    const client = await connected();
+    await client.callTool({ name: "check_scenario", arguments: scenario() });
+    expect(getCheckCount()).toBe(before + 1);
+    await client.close();
+  });
+
+  it("replay_suite_tool_increments_metric", async () => {
+    const before = getReplayCount();
+    const client = await connected();
+    await client.callTool({ name: "replay_suite", arguments: {} });
+    expect(getReplayCount()).toBe(before + 1);
     await client.close();
   });
 

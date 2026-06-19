@@ -14,6 +14,7 @@ import {
   defaultReviewsDir,
   findPreviousRun,
   findGoldenRun,
+  findGoldenRunIn,
   scenarioKey,
   diffRuns,
   type RunEnvelope,
@@ -114,7 +115,8 @@ async function route(
       const baseline =
         vs === "golden" ? await findGoldenRun(scenarioKey(curr), dir, verdictsDir) : await findPreviousRun(curr, dir);
       const diff = baseline ? diffRuns(baseline, curr) : null;
-      return { status: 200, contentType: "text/html; charset=utf-8", body: renderDiff(curr, baseline, diff) };
+      const body = renderDiff(curr, baseline, diff, vs === "golden" ? "golden" : "previous");
+      return { status: 200, contentType: "text/html; charset=utf-8", body };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         return { status: 404, contentType: "text/plain", body: "run not found" };
@@ -245,22 +247,25 @@ async function listRuns(dir: string, verdictsDir: string): Promise<ListingItem[]
   const files = entries.filter(
     (e) => e.endsWith(".json") && RUN_ID_RE.test(e.slice(0, -".json".length)),
   );
-  const items: Array<ListingItem & { mtimeMs: number }> = [];
+  // F-arch-1: carrega TODOS os runs uma vez (evita O(N²) — findGoldenRun re-scaneava
+  // o diretório por run). loadedEnvs reusa o parse para o cálculo de golden por linha.
+  const loaded: Array<{ id: string; env: RunEnvelope; mtimeMs: number }> = [];
   for (const file of files) {
     const id = file.slice(0, -".json".length);
-    let env: RunEnvelope;
     try {
-      env = await loadRun(join(dir, file));
+      loaded.push({ id, env: await loadRun(join(dir, file)), mtimeMs: (await stat(join(dir, file))).mtimeMs });
     } catch {
       continue; // EC-2: pula arquivo corrompido
     }
-    const s = await stat(join(dir, file));
+  }
+  const allEnvs = loaded.map((l) => l.env);
+  const items: Array<ListingItem & { mtimeMs: number }> = [];
+  for (const { id, env, mtimeMs } of loaded) {
     const verdict = await loadVerdict(id, verdictsDir);
-    // M6 (DoD #4): este run regride vs o golden aprovado do cenário? best-effort —
-    // um golden diferente do próprio run E com hasRegression marca o badge.
+    // M6 (DoD #4): este run regride vs o golden aprovado do cenário? best-effort.
     let regression = false;
     try {
-      const golden = await findGoldenRun(scenarioKey(env), dir, verdictsDir);
+      const golden = await findGoldenRunIn(allEnvs, scenarioKey(env), verdictsDir);
       regression = golden !== null && golden.runId !== id && diffRuns(golden, env).hasRegression;
     } catch {
       regression = false; // falha no cálculo do golden não derruba a listagem
@@ -275,7 +280,7 @@ async function listRuns(dir: string, verdictsDir: string): Promise<ListingItem[]
       // M4 (DoD #2): origem do cenário p/ o badge "gerado pelo agente".
       origin: env.provenance?.origin,
       regression,
-      mtimeMs: s.mtimeMs,
+      mtimeMs,
     });
   }
   items.sort((a, b) => b.mtimeMs - a.mtimeMs);

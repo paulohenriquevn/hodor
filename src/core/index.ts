@@ -56,7 +56,17 @@ export {
 // M5 — regressão: diff entre runs + anti-flaky
 export { maskNoise, NOISE_SENTINEL } from "./maskNoise.js";
 export { diffRuns, type RunDiff, type StepDiff, type HeaderDiff } from "./diffRuns.js";
-export { scenarioKey, findPreviousRun, findGoldenRun, pruneRunHistory, defaultHistoryLimit, type ScenarioIdentity } from "./runHistory.js";
+export {
+  scenarioKey,
+  findPreviousRun,
+  findGoldenRun,
+  findGoldenRunIn,
+  loadAllRunsIn,
+  goldenScenarioKeys,
+  pruneRunHistory,
+  defaultHistoryLimit,
+  type ScenarioIdentity,
+} from "./runHistory.js";
 export { checkScenario, type CheckResult, type CheckStatus, type CheckScenarioOptions } from "./checkScenario.js";
 export { replaySuite, type SuiteReport, type SuiteItemResult, type SuiteStatus } from "./replaySuite.js";
 

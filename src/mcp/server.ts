@@ -169,16 +169,19 @@ export function buildServer(): McpServer {
       outputSchema: {
         status: z.enum(["ok", "regression", "no_baseline"]),
         runId: z.string(),
-        hasRegression: z.boolean(),
+        goldenRunId: z.string().nullable(),
+        noiseChanged: z.boolean(),
       },
     },
     async (scenario) => {
-      const { status, diff, run } = await checkScenario(scenario);
+      const { status, run, goldenRunId, noiseChanged } = await checkScenario(scenario);
       const path = await persistRun(run); // o run novo entra no histórico p/ revisão
       await pruneAfterPersist(run);
       checkCount += 1;
-      const out = { status, runId: run.runId, hasRegression: diff?.hasRegression ?? false };
-      console.error(JSON.stringify({ event: "check_scenario", status, runId: run.runId, path }));
+      // goldenRunId → o agente busca o diff completo via web (/runs/:id/diff?vs=golden);
+      // noiseChanged → mesmo em `ok`, sinaliza que regras de noise divergiram (F-dom-1/D4).
+      const out = { status, runId: run.runId, goldenRunId, noiseChanged };
+      console.error(JSON.stringify({ event: "check_scenario", status, runId: run.runId, goldenRunId, noiseChanged, path }));
       return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }], structuredContent: out };
     },
   );
@@ -199,12 +202,14 @@ export function buildServer(): McpServer {
         regression: z.number(),
         noBaseline: z.number(),
         error: z.number(),
+        uncataloguedGoldens: z.number(),
       },
     },
     async () => {
       const r = await replaySuite();
       replayCount += 1;
-      const out = { allOk: r.allOk, total: r.total, ok: r.ok, regression: r.regression, noBaseline: r.noBaseline, error: r.error };
+      // uncataloguedGoldens → o agente sabe quantos cenários aprovados NÃO estão na suíte (F-dom-2).
+      const out = { allOk: r.allOk, total: r.total, ok: r.ok, regression: r.regression, noBaseline: r.noBaseline, error: r.error, uncataloguedGoldens: r.uncataloguedGoldens };
       console.error(JSON.stringify({ event: "replay_suite", ...out }));
       return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }], structuredContent: out };
     },

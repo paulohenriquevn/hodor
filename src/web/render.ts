@@ -293,11 +293,20 @@ export function renderListing(items: ListingItem[]): string {
  * noise já suprimidos pelo core). Sem run anterior → mensagem "primeiro run".
  * Todo conteúdo dinâmico escapado (anti-XSS, herdado do M2).
  */
-export function renderDiff(curr: RunEnvelope, prev: RunEnvelope | null, diff: RunDiff | null): string {
+export function renderDiff(
+  curr: RunEnvelope,
+  prev: RunEnvelope | null,
+  diff: RunDiff | null,
+  baselineKind: "previous" | "golden" = "previous",
+): string {
   const title = curr.name ? escapeHtml(curr.name) : escapeHtml(curr.runId);
   let bodyHtml: string;
   if (!prev || !diff) {
-    bodyHtml = `<p class='muted'>Primeiro run deste cenário — não há execução anterior para comparar.</p>`;
+    // F-tests-1: distingue "sem golden aprovado" de "primeiro run" (vs anterior).
+    bodyHtml =
+      baselineKind === "golden"
+        ? `<p class='muted'>Sem baseline aprovado (golden) para esta versão do cenário — aprove um run para criar o baseline de regressão.</p>`
+        : `<p class='muted'>Primeiro run deste cenário — não há execução anterior para comparar.</p>`;
   } else {
     const banner = diff.hasRegression
       ? `<p class='diff-changed'>⚠ Mudança de comportamento detectada vs run anterior.</p>`

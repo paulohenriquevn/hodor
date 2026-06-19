@@ -85,14 +85,47 @@ export async function findGoldenRun(
   dir: string = defaultRunsDir(),
   verdictsDir: string = defaultVerdictsDir(),
 ): Promise<RunEnvelope | null> {
-  const ofScenario = (await loadAllRuns(dir)).filter((r) => scenarioKey(r) === key).sort(compareRuns);
-  // do mais recente p/ o mais antigo: o primeiro aprovado é o golden.
+  return findGoldenRunIn(await loadAllRuns(dir), key, verdictsDir);
+}
+
+/**
+ * Variante que opera sobre runs JÁ carregados (F-arch-1): evita re-escanear o
+ * diretório `runs/` por chamada — a listagem da web carrega uma vez e reusa.
+ */
+export async function findGoldenRunIn(
+  runs: RunEnvelope[],
+  key: string,
+  verdictsDir: string = defaultVerdictsDir(),
+): Promise<RunEnvelope | null> {
+  const ofScenario = runs.filter((r) => scenarioKey(r) === key).sort(compareRuns);
   for (let i = ofScenario.length - 1; i >= 0; i--) {
     const run = ofScenario[i]!;
     const verdict = await loadVerdict(run.runId, verdictsDir);
     if (verdict?.verdict === "approved") return run;
   }
   return null;
+}
+
+/** Carrega todos os runs de `dir` (export do helper interno p/ reuso pela web — F-arch-1). */
+export async function loadAllRunsIn(dir: string = defaultRunsDir()): Promise<RunEnvelope[]> {
+  return loadAllRuns(dir);
+}
+
+/**
+ * Conjunto de `scenarioKey`s que TÊM um golden aprovado (F-dom-2). Usado por
+ * `replaySuite` p/ reportar quantos goldens NÃO estão catalogados em `drafts/`
+ * (cenários aprovados via `run_scenario` sem `save_scenario_draft` ficam fora da suíte).
+ */
+export async function goldenScenarioKeys(
+  dir: string = defaultRunsDir(),
+  verdictsDir: string = defaultVerdictsDir(),
+): Promise<Set<string>> {
+  const runs = await loadAllRuns(dir);
+  const keys = new Set<string>();
+  for (const key of new Set(runs.map(scenarioKey))) {
+    if ((await findGoldenRunIn(runs, key, verdictsDir)) !== null) keys.add(key);
+  }
+  return keys;
 }
 
 /**

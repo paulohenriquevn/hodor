@@ -1,0 +1,165 @@
+agent: review-m6-golden-gate-cross-validation
+review_target: origin/main..develop for plan m6-golden-gate
+plan: .claude/knowledge-base/plans/m6-golden-gate-plan.md
+verdict: READY_TO_MERGE
+summary: >
+  Every M6 task maps to a commit, every Acceptance Criterion is observably satisfied,
+  all 4 ROADMAP §M6 DoDs are demonstrated by the green E2E, all 7 Coverage-Matrix gaps
+  are resolved, the 6 ADRs (D1-D6) are respected as written, EC-1 isolation is implemented
+  for real (not plan-only), and the human-single-approver contract (M2) is intact — NO tool
+  writes a verdict. Full chain re-run clean: tsc 0 errors, npm audit 0 vulns, 212/212 tests,
+  zero new deps, DIP clean, new-core coverage >= 90%. No BLOCKER or HIGH findings.
+
+plan_drift:
+  plan_edited_after_implement: false
+  details: >
+    Plan committed once at 4525610 (2026-06-19 18:10) BEFORE all feature commits
+    (c7396c5 18:15, 2b41db6 18:20, f4f846f 18:23, 634b0c1 18:25). Plan is frozen; review reliable.
+
+plan_tasks_summary:
+  total_tasks: 6
+  fully_implemented: 6
+  partial: 0
+  missing: 0
+  diverged: 0
+
+task_to_commit:
+  - task: T1.1 findGoldenRun
+    commit: c7396c5
+    files_declared: [src/core/runHistory.ts, src/core/runHistory.test.ts, src/core/index.ts]
+    files_changed_match: true
+    status: PASS
+    evidence: >
+      findGoldenRun(key,dir,verdictsDir) iterates newest->oldest, returns first run whose
+      loadVerdict===approved; ignores rejected/none/other-scenario. 4 RED tests green.
+  - task: T2.1 checkScenario
+    commit: c7396c5
+    files_declared: [src/core/checkScenario.ts (NEW), src/core/checkScenario.test.ts (NEW), src/core/index.ts]
+    files_changed_match: true
+    status: PASS
+    evidence: >
+      Re-runs via runScenario (D2 — fresh run id proven by check_scenario_returns_fresh_run),
+      finds golden by scenarioKey(run), returns {status,diff,run}; core does NOT persist
+      (EC-3 proven), never writes verdict. 7 RED tests green.
+  - task: T3.1 replaySuite
+    commit: c7396c5
+    files_declared: [src/core/replaySuite.ts (NEW), src/core/replaySuite.test.ts (NEW), src/core/index.ts]
+    files_changed_match: true
+    status: PASS
+    evidence: >
+      Iterates listDrafts, per-item try/catch -> 4-way status ok|regression|no_baseline|error;
+      allOk = regression===0 && error===0. EC-1 isolation REAL: replay_suite_isolates_failing_scenario
+      points a dead scenario at http://127.0.0.1:1/dead, asserts error isolated + live scenario ok +
+      suite not aborted. 5 RED tests green.
+  - task: T4.1 MCP tools
+    commit: 2b41db6
+    files_declared: [src/mcp/server.ts, src/mcp/check.test.ts (NEW)]
+    files_changed_match: true
+    status: PASS
+    evidence: >
+      check_scenario + replay_suite registered with outputSchema (machine-readable, DoD #2);
+      check_scenario persists the new run + prunes but NEVER saveVerdict; stderr metrics
+      (checkCount/replayCount). 4 InMemoryTransport tests green.
+  - task: T5.1 web ?vs=golden + badge
+    commit: f4f846f
+    files_declared: [src/web/server.ts, src/web/render.ts, src/web/server.test.ts, src/web/render.test.ts]
+    files_changed_match: true
+    status: PASS
+    evidence: >
+      /runs/:id/diff?vs=golden resolves golden via findGoldenRun(scenarioKey(curr)); default
+      (no ?vs) preserves M5 vs-previous; listing computes best-effort regression badge tolerant
+      to errors; :id stays UUID-validated (EC-4 — golden from loaded run, never URL).
+  - task: T6.1 E2E
+    commit: 634b0c1
+    files_declared: [src/m6-e2e.test.ts (NEW), CHANGELOG.md]
+    files_changed_match: true
+    status: PASS
+    evidence: >
+      e2e_m6_check_scenario_gates_on_golden GREEN — covers all 7 steps incl. step 7
+      (gate never wrote verdict: verdicts dir length == 1, only the golden's). CHANGELOG
+      [Unreleased] § Added entry present.
+
+acceptance_criteria_summary:
+  total: 27
+  satisfied: 27
+  unverified: 0
+  false_claims: 0
+
+dod_to_evidence:
+  - dod: "ROADMAP §M6 DoD #1 — findGoldenRun (latest approved run)"
+    evidence: "runHistory.ts findGoldenRun filters loadVerdict===approved; E2E step 1; 4 unit tests"
+    status: PASS
+  - dod: "ROADMAP §M6 DoD #2 — check_scenario {status,diff} vs golden, no auto-approve"
+    evidence: "checkScenario core + MCP tool outputSchema; E2E steps 2-4,7; never saveVerdict (grep clean)"
+    status: PASS
+  - dod: "ROADMAP §M6 DoD #3 — suite replay (aggregated report)"
+    evidence: "replaySuite + replay_suite tool; E2E step 5 (regression>=1, allOk false)"
+    status: PASS
+  - dod: "ROADMAP §M6 DoD #4 — web diff vs golden + listing marks regressions"
+    evidence: "?vs=golden route + reg-tag badge; E2E step 6 ('Mudança de comportamento detectada')"
+    status: PASS
+  - dod: "Global DoD — tsc 0 errors"
+    evidence: "npx tsc --noEmit exit 0"
+    status: PASS
+  - dod: "Global DoD — npm audit 0 vulns"
+    evidence: "found 0 vulnerabilities"
+    status: PASS
+  - dod: "Global DoD — ZERO new dependency"
+    evidence: "git diff origin/main..develop -- package.json shows no added dep"
+    status: PASS
+  - dod: "Global DoD — full suite green / backward-compat M0-M5"
+    evidence: "212/212 tests, 35 files passed"
+    status: PASS
+  - dod: "Global DoD — new core coverage >= 90%"
+    evidence: "checkScenario 100% lines, replaySuite 100% lines, runHistory 95.55% lines"
+    status: PASS
+  - dod: "Global DoD — DIP (core imports nothing from web/mcp)"
+    evidence: "grep 'from ../web|from ../mcp' src/core/ empty"
+    status: PASS
+  - dod: "Global DoD — NO tool writes verdict (human single approver / M2 contract)"
+    evidence: "saveVerdict appears only in tests; no production tool/core writes verdict"
+    status: PASS
+  - dod: "Global DoD — CHANGELOG [Unreleased] § Added"
+    evidence: "M6 entry present in CHANGELOG.md Unreleased Added"
+    status: PASS
+
+adr_compliance:
+  total_adrs: 6
+  respected: 6
+  diverged_without_new_adr: 0
+  detail:
+    - adr: D1
+      respected: true
+      note: "findGoldenRun reuses loadAllRuns/compareRuns, filters approved (not hasVerdict)."
+    - adr: D2
+      respected: true
+      note: "checkScenario RE-RUNS via runScenario (fresh run id proven); golden only the left side of diffRuns; NOT reconstructed from golden requests. Implemented exactly as described."
+    - adr: D3
+      respected: true
+      note: "Catalog = listDrafts intersect golden; drafts without golden -> no_baseline, do not fail."
+    - adr: D4
+      respected: true
+      note: "Logic in core, 2 thin MCP tools with outputSchema; adapter persists new run; no verdict write."
+    - adr: D5
+      respected: true
+      note: "Status 3-way (core) + 4-way (suite incl error); allOk=regression===0 && error===0; no_baseline excluded."
+    - adr: D6
+      respected: true
+      note: "GET /runs/:id/diff?vs=golden additive; default preserves M5; no-golden -> message; listing badge."
+
+close_the_loop_assessment:
+  real: true
+  agent_can_consume_approval: true
+  evidence: >
+    check_scenario returns a structured {status, runId, hasRegression} via MCP outputSchema —
+    machine-consumable. status is computed against the APPROVED golden (loadVerdict===approved),
+    so the agent consumes the human approval rather than producing it. E2E proves the loop closes:
+    no_baseline (never approved) -> human approves -> ok -> service changes -> regression detected ->
+    replay aggregates -> web shows the diff -> verdicts dir still holds ONLY the golden's verdict.
+  no_auth_ceiling_honestly_declared: true
+  ceiling_evidence: >
+    Declared in plan Context risk #2, ADR D2 Rationale, T6.1 Failure scenarios, Drawbacks table
+    (Severidade Alta), and the CHANGELOG entry ('Teto conhecido: re-execução real ainda não injeta
+    segredos — endpoints autenticados precisam do M7'). E2E uses an unauthenticated endpoint. Not hidden.
+
+findings: []

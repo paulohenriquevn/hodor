@@ -5,6 +5,7 @@ import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkScenario } from "./checkScenario.js";
+import { runScenario } from "./runScenario.js";
 import { persistRun } from "./runStore.js";
 import { saveVerdict } from "./verdict.js";
 import type { Scenario } from "./scenarioSchema.js";
@@ -94,5 +95,31 @@ describe("checkScenario (M6)", () => {
     const before = (await readdir(verdictsDir!)).length;
     await checkScenario(scenario(), { runsDir, verdictsDir });
     expect((await readdir(verdictsDir!)).length).toBe(before); // nenhum verdict novo
+  });
+});
+
+describe("checkScenario — D2 recaptura fresca (F-tests-2)", () => {
+  it("check_scenario_recaptures_inter_step_token_freshly", async () => {
+    // servidor: POST /login → {token: <contador>}; GET /me com header echo do token
+    let counter = 0;
+    const srv = createServer((req, res) => {
+      if (req.url === "/login") { counter += 1; res.statusCode = 200; res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ token: `tok-${counter}` })); return; }
+      res.statusCode = 200; res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ seen: req.headers["x-token"] ?? null }));
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const p = (srv.address() as AddressInfo).port;
+    const sc: Scenario = { schemaVersion: 1, name: "auth-flow", steps: [
+      { name: "login", request: { method: "POST", url: `http://127.0.0.1:${p}/login` }, captures: { token: { jsonpath: "$.token" } } },
+      { name: "me", request: { method: "GET", url: `http://127.0.0.1:${p}/me`, headers: { "x-token": "${{ token }}" } }, asserts: [{ source: "jsonpath:$.seen", op: "contains", value: "tok" }] },
+    ] };
+    // golden com tok-1
+    const g = await runScenario(sc, { newId: () => "g-auth", now: () => 0 });
+    await persistRun(g, runsDir!);
+    await saveVerdict({ runId: "g-auth", verdict: "approved", decidedAt: "x" }, verdictsDir!);
+    // check re-roda → recaptura tok-2 FRESCO (não reusa o tok-1 stale do golden)
+    const res = await checkScenario(sc, { runsDir, verdictsDir, deps: { newId: () => "fresh-auth" } });
+    expect(res.run.steps[1]!.request.headers!["x-token"]).toBe("tok-2"); // token novo, não tok-1
+    expect(res.run.steps[1]!.response.body).toContain("tok-2");
+    await new Promise<void>((r) => srv.close(() => r()));
   });
 });

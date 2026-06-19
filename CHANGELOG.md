@@ -12,6 +12,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 
 ### Changed
 
+### Security
+- **M6 — `replay_suite` re-executa drafts commitáveis (vetor SSRF amplificado, documentado):** `replay_suite` itera `drafts/` (commitável por design) e re-executa cada cenário contra a rede. Um draft malicioso commitado por um terceiro (via PR/merge) faria o gate disparar requests HTTP arbitrários a partir do conteúdo do repositório, sem confirmação humana no replay — amplificação do SSRF já inerente ao `run_scenario` (M1), agora a partir de conteúdo persistido. Threat model atual: uso interno single-user e o agente é confiável; mitigação técnica (allowlist de hosts opt-in via env na fronteira `executeRequest`) é candidata ao M7. **Não execute `replay_suite` sobre drafts de origem não-confiável.**
+- **M6 — semântica do gate (both-broken):** o gate compara COMPORTAMENTO vs golden (regressão = mudou), não validade absoluta. Um serviço consistentemente quebrado (golden 500 + atual 500 idêntico) retorna `ok` (sem mudança). Os asserts do cenário continuam visíveis no run para o humano; o gate é especificamente sobre *regressão*, não sobre *correção*.
+
 ### Deprecated
 
 ### Removed

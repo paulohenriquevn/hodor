@@ -92,4 +92,26 @@ describe("replaySuite (M6)", () => {
     const r = await replaySuite({ draftsDir, runsDir, verdictsDir });
     expect(r.results[0]).toMatchObject({ scenarioKey: "cen-x", status: "ok" });
   });
+
+  it("replay_suite_reports_uncatalogued_goldens", async () => {
+    // F-dom-2: um cenário aprovado (golden) SEM draft → fora da suíte; o report avisa
+    const orphan = scenario("cen-órfão", "/x");
+    const g = await runScenario(orphan, { newId: () => "g-orphan", now: () => 0 });
+    await persistRun(g, runsDir!);
+    await saveVerdict({ runId: "g-orphan", verdict: "approved", decidedAt: "x" }, verdictsDir!);
+    // NÃO salva draft do órfão; cataloga outro cenário
+    await catalogWithGolden("cen-cat", "/y", "g-cat");
+    const r = await replaySuite({ draftsDir, runsDir, verdictsDir });
+    expect(r.total).toBe(1); // só o catalogado roda
+    expect(r.uncataloguedGoldens).toBe(1); // o órfão tem golden mas não está na suíte
+  });
+
+  it("replay_suite_error_result_carries_reason", async () => {
+    // F-dom-5: erro não é engolido — a razão fica no resultado
+    await catalogWithGolden("cen-vivo", "/x", "g-vivo2");
+    await saveDraft({ schemaVersion: 1, name: "cen-morto", provenance: prov, steps: [{ name: "get", request: { method: "GET", url: "http://127.0.0.1:1/dead" } }] }, { dir: draftsDir! });
+    const r = await replaySuite({ draftsDir, runsDir, verdictsDir });
+    const errored = r.results.find((x) => x.status === "error");
+    expect(errored?.error).toBeTruthy(); // razão presente, não engolida
+  });
 });

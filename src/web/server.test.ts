@@ -296,7 +296,7 @@ describe("web server — M6 diff vs golden", () => {
     await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => C }, "cg2"), dir!);
     const base = await start();
     const html = await (await fetch(`${base}/runs/${C}/diff?vs=golden`)).text();
-    expect(html).toContain("Primeiro run deste cenário"); // sem golden → mensagem de baseline
+    expect(html).toContain("Sem baseline aprovado (golden)"); // F-tests-1: mensagem golden-aware
   });
 
   it("web_diff_route_default_still_vs_previous", async () => {

@@ -1,0 +1,151 @@
+agent: review-m6-golden-gate-tests
+review_target: main..HEAD for plan m6-golden-gate
+plan: .claude/knowledge-base/plans/m6-golden-gate-plan.md
+date: 2026-06-19
+suite_status:
+  command: npx vitest run
+  result: PASS
+  test_files: 35
+  tests: 212
+coverage:
+  command: npx vitest run --coverage (json-summary)
+  m6_targets:
+    checkScenario.ts: { stmts: 100, branch: 100, func: 100, lines: 100 }   # >= 90 OK
+    replaySuite.ts:   { stmts: 95.45, branch: 94.11, func: 100, lines: 100 } # >= 90 OK
+    runHistory.ts:    { stmts: 92.59, branch: 82.92, func: 100, lines: 95.55 } # >= 90 OK (findGoldenRun lines covered)
+  verdict: "All 3 M6 core targets >= 90% per Global DoD. M0-M5 suites green (212/212)."
+test_pyramid:
+  unit_added: 16        # runHistory(findGoldenRun) 4 + checkScenario 7 + replaySuite 5
+  integration_added: 9  # mcp/check 4 + web/render M6 1 + web/server M6 3 + (E2E counted below)
+  e2e_added: 1          # m6-e2e
+  total: 26
+  note: >
+    Pyramid is healthy (many fast unit core tests, a moderate integration band via
+    InMemoryTransport + ephemeral HTTP, exactly one E2E). Not inverted.
+dod_coverage:
+  - dod: "DoD#1 findGoldenRun latest-approved"
+    covered: true
+    evidence: "find_golden_run_returns_latest_approved / _ignores_rejected / _null_when_none_approved / _ignores_other_scenarios — 4-way, all real fs+verdict."
+  - dod: "DoD#2 check_scenario {status,diff} 3-way, never auto-approves"
+    covered: true
+    evidence: "checkScenario 3-way unit tests + mcp check_scenario_tool_persists_run_but_no_verdict + check_scenario_never_writes_verdict. Real ephemeral server, real diff."
+  - dod: "DoD#3 replay_suite aggregated report"
+    covered: true
+    evidence: "replaySuite aggregates_ok_and_regression / counts_no_baseline / isolates_failing (EC-1) / empty_catalog / results_carry_status + mcp replay_suite_tool_aggregates."
+  - dod: "DoD#4 web diff ?vs=golden + listing marks regression"
+    covered: partial
+    evidence: "web_diff_route_vs_golden_renders_against_golden + _default_still_vs_previous + render M6 listing badge present. BUT no_baseline message diverges from plan (see F-tests-1)."
+edge_cases_from_plan:
+  covered: 2
+  partial: 1
+  missing: 1
+  detail:
+    EC-1 (suite isolates failing target): covered (replay_suite_isolates_failing_scenario — real connection-refused; live target still ok) — but see F-tests-3 (flaky-risk) and F-tests-4 (status not pinned per-scenario).
+    EC-2 (golden of other scenarioKey not used): covered (check_scenario_does_not_match_other_scenario_golden).
+    EC-3 (run is never its own baseline / core does not persist): covered strongly (check_scenario_finds_golden_before_persisting asserts runs dir == ['golden-1']).
+    "D2 fresh-recapture of inter-step tokens": MISSING (F-tests-2) — the central rationale of D2 is untested.
+findings:
+  - id: F-tests-2
+    severity: HIGH
+    file: src/core/checkScenario.test.ts
+    line: 48
+    plan_ref: "ADR D2 + T2.1 (check_scenario RE-RODA recaptura tokens frescos; golden tem captures resolvidos/velhos)"
+    summary: >
+      The single most load-bearing behavioral claim of M6 — that checkScenario RE-RUNS
+      the scenario to recapture FRESH inter-step variables instead of replaying the
+      golden's stale resolved captures (D2) — has ZERO test coverage. Every checkScenario
+      / replaySuite / E2E test uses a trivial single-step GET with no `captures` and no
+      multi-step token propagation. A regression where checkScenario accidentally diffed
+      reconstructed golden requests (the rejected pure-replay alternative) would pass the
+      whole suite. The "re-roda" wording is asserted only indirectly via
+      check_scenario_returns_fresh_run (which only checks runId != golden, not capture freshness).
+    evidence: |
+      grep -rn 'captures' src/core/checkScenario.test.ts src/m6-e2e.test.ts -> 0 matches
+      All scenarios: single step { method:GET, asserts:[status==200] }, no captures, no step 2.
+    recommended_action: >
+      Add a 2-step scenario where step 1 captures a token that changes between golden
+      and re-run (e.g. server returns an incrementing/echoed value captured and sent in
+      step 2). Assert that the re-run uses the FRESH captured value (status ok), proving
+      checkScenario did not replay the golden's stale captured token.
+  - id: F-tests-1
+    severity: MEDIUM
+    file: src/web/server.test.ts
+    line: 295
+    plan_ref: "ADR D6 / T5.1 — sem golden -> 'sem baseline para esta versão do cenário'"
+    summary: >
+      web_diff_route_vs_golden_no_baseline_message asserts the M5 generic string
+      "Primeiro run deste cenário" for the no-golden case, but the plan (D6/T5.1, DoD#4)
+      specifies the distinct message "sem baseline para esta versão do cenário". The
+      implementation (server.ts:114-117) sets baseline=null and renders the M5 first-run
+      message, conflating "no golden baseline" with "first run ever". The test codifies
+      this divergence instead of catching it: a run that HAS a previous run but no golden
+      will wrongly read "first run of this scenario". DoD#4's no-baseline UX contract is
+      not actually verified.
+    evidence: |
+      plan T5.1: 'sem golden -> "sem baseline para esta versão do cenário"'
+      test asserts: expect(html).toContain("Primeiro run deste cenário")
+      server.ts:115-116 -> findGoldenRun==null -> baseline=null -> renderDiff(curr,null,null) (M5 message)
+    recommended_action: >
+      Either (a) implement a golden-specific no-baseline message and assert it, or
+      (b) write an ADR accepting reuse of the M5 message and update the plan. Add a test
+      where the run HAS a previous run but no approved golden, to prove the message is
+      not misleadingly "first run".
+  - id: F-tests-3
+    severity: LOW
+    file: src/core/replaySuite.test.ts
+    line: 82
+    plan_ref: "EC-1 — replay_suite_isolates_failing_scenario"
+    summary: >
+      EC-1 isolation is proven by pointing a scenario at http://127.0.0.1:1/dead and
+      relying on an immediate connection-refused. Port 1 being closed is environment
+      dependent; on a host where port 1 is filtered (DROP) rather than refused, the
+      request would hang until executeRequest's timeout instead of failing fast,
+      slowing or (with a short CI timeout) flaking the test. testing.md treats flaky as
+      a bug. The behavior itself (try/catch isolation) is correct.
+    evidence: |
+      url: "http://127.0.0.1:1/dead"  (assumes ECONNREFUSED, not timeout)
+    recommended_action: >
+      Make the down-target deterministic: start an ephemeral server, capture its port,
+      close it, then point the dead scenario at that just-freed port — guarantees a fast
+      connection-refused on any host. Or assert a bounded timeout dep is injected.
+  - id: F-tests-4
+    severity: LOW
+    file: src/core/replaySuite.test.ts
+    line: 79
+    plan_ref: "EC-1 / T3.1 — results[] carries {scenarioKey, status} per scenario"
+    summary: >
+      replay_suite_isolates_failing_scenario asserts only the aggregate counters
+      (error===1, ok===1, allOk===false). It never asserts WHICH scenario got "error"
+      vs "ok" in results[]. A bug that mislabeled the live scenario as error and the
+      dead one as ok would still satisfy the counters. The per-scenario mapping (the
+      point of isolation) is asserted only in the happy-path replay_suite_results_carry_status_per_scenario.
+    evidence: |
+      assertions: r.total/r.error/r.ok/r.allOk only; no check on r.results[i].status by key.
+    recommended_action: >
+      Assert results contains {scenarioKey:'cen-vivo', status:'ok'} AND
+      {scenarioKey:'cen-morto', status:'error'} so the isolation maps the right item.
+  - id: F-tests-5
+    severity: LOW
+    file: src/core/checkScenario.test.ts
+    line: 55
+    plan_ref: "D5 — status ok path; anti-flaky normalization"
+    summary: >
+      The only "ok" path (check_scenario_ok_when_matches_golden) asserts status==='ok'
+      and diff.hasRegression===false but never asserts that volatile headers/timings were
+      actually normalized away (it works because the live server returns byte-identical
+      bodies/headers each call). There is no checkScenario-level test proving an ok verdict
+      survives a benign volatile drift (e.g. a Date header that changes). Covered indirectly
+      by M5 diffRuns tests, so depth gap only.
+    evidence: |
+      ephemeral server returns identical {value:'A'} each call; no volatile header injected.
+    recommended_action: >
+      Optional: add a golden vs re-run where a volatile response header (e.g. Date) differs
+      and assert status stays 'ok', binding checkScenario to the normalization contract.
+positive_findings:
+  - "EC-3 is proven rigorously: check_scenario_finds_golden_before_persisting asserts the runs dir equals exactly ['golden-1'] after a check — the core genuinely never persists, so the fresh run can never be its own baseline."
+  - "check_scenario_never_writes_verdict + mcp check_scenario_tool_persists_run_but_no_verdict together prove the gate does NOT auto-approve at BOTH the core and adapter layers (human stays sole approver, DoD#2)."
+  - "E2E e2e_m6_check_scenario_gates_on_golden exercises the FULL closed loop against a REAL ephemeral HTTP server: no_baseline -> approve golden -> ok -> assert no new verdict -> mutate service -> regression(diff.hasRegression) -> replaySuite aggregates(allOk:false) -> web ?vs=golden renders the change. This is a genuine end-to-end proof, not a mock chain."
+  - "Mock/fixture hygiene is good: no vi.mock of the world; tests use real fs (mkdtemp/rm) and real HTTP; deps injected via newId/now for determinism; per-test temp dirs with afterEach cleanup; no shared mutable state across tests."
+  - "No skipped/only tests, no commented-out test blocks (grep .skip/.only/xit -> 0). Test names are behavior-shaped (find_golden_run_ignores_rejected, etc.)."
+blocker: none
+high: ["F-tests-2 — D2 fresh-recapture (the core M6 rationale) has zero test coverage"]
