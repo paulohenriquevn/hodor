@@ -18,6 +18,8 @@ export interface ListingItem {
   verdict: Verdict["verdict"] | null;
   // M4: origem do cenário (badge "gerado pelo agente"). Ausente em runs M0-M3.
   origin?: "agent-generated" | "human-authored";
+  // M6: este run regride vs o golden aprovado do cenário (badge "regressão"). Best-effort.
+  regression?: boolean;
 }
 
 /**
@@ -232,6 +234,7 @@ const LISTING_STYLE = `body { font-family: ui-monospace, SFMono-Regular, Menlo, 
     .pf-pass { color: #137333; font-weight: 700; } .pf-fail { color: #b00020; font-weight: 700; }
     .v-approved { color: #137333; } .v-rejected { color: #b00020; } .v-pending { color: #888; }
     .agent-tag { font-size: .75rem; background: #eef3fb; color: #0b66c3; padding: 1px 6px; border-radius: 4px; }
+    .reg-tag { font-size: .75rem; background: #fdecef; color: #b00020; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
     .muted { color: #888; }`;
 
 /** Página de listagem (GET /) — runs mais recentes primeiro. */
@@ -252,8 +255,12 @@ export function renderListing(items: ListingItem[]): string {
         it.origin === "agent-generated"
           ? ` <span class='agent-tag'>🤖 gerado${it.verdict ? "" : " · pendente"}</span>`
           : "";
+      // M6: badge de regressão vs golden aprovado (DoD #4).
+      const reg = it.regression
+        ? ` <a class='reg-tag' href='/runs/${escapeHtml(it.runId)}/diff?vs=golden'>⚠ regressão</a>`
+        : "";
       return `<tr>
-        <td><a href='/runs/${escapeHtml(it.runId)}'>${it.name ? escapeHtml(it.name) : "(sem cenário)"}</a>${agent}</td>
+        <td><a href='/runs/${escapeHtml(it.runId)}'>${it.name ? escapeHtml(it.name) : "(sem cenário)"}</a>${agent}${reg}</td>
         <td><code>${escapeHtml(it.runId)}</code></td>
         <td>${escapeHtml(it.createdAt)}</td>
         <td>${it.stepCount}</td>

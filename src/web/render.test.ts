@@ -244,3 +244,15 @@ describe("M5 — renderDiff (regressão)", () => {
     expect(html).toContain("&lt;script&gt;");
   });
 });
+
+describe("M6 — listagem marca regressão", () => {
+  it("web_listing_marks_regression_vs_golden", () => {
+    const html = renderListing([
+      { runId: "00000000-0000-0000-0000-0000000000r1", name: "reg", createdAt: "x", stepCount: 1, allAssertsPass: true, verdict: null, regression: true },
+      { runId: "00000000-0000-0000-0000-0000000000r2", name: "ok", createdAt: "y", stepCount: 1, allAssertsPass: true, verdict: null },
+    ]);
+    expect(html).toContain("⚠ regressão");
+    // só 1 badge (o run ok não tem)
+    expect(html.split("⚠ regressão").length - 1).toBe(1);
+  });
+});

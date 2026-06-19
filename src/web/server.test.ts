@@ -272,3 +272,39 @@ describe("web server — M5 diff route", () => {
     expect(html).toContain("body mudou");
   });
 });
+
+describe("web server — M6 diff vs golden", () => {
+  const G = "00000000-0000-0000-0000-0000000000g1";
+  const C = "00000000-0000-0000-0000-0000000000c1";
+  function stepBody(body: string): RunStep {
+    return { request: { method: "GET", url: "http://api.test/x", headers: {} },
+      response: { status: 200, statusText: "OK", headers: { "content-type": "application/json" }, body, timings: { startedAt: "2026-06-19T00:00:00.000Z", durationMs: 1 } } };
+  }
+
+  it("web_diff_route_vs_golden_renders_against_golden", async () => {
+    // golden aprovado (value=1) + run atual (value=2) → ?vs=golden destaca a regressão
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => G }, "cg"), dir!);
+    const { saveVerdict } = await import("../core/index.js");
+    await saveVerdict({ runId: G, verdict: "approved", decidedAt: "x" }, vdir!);
+    await persistRun(buildRunEnvelope([stepBody('{"v":2}')], { now: () => 2, newId: () => C }, "cg"), dir!);
+    const base = await start();
+    const html = await (await fetch(`${base}/runs/${C}/diff?vs=golden`)).text();
+    expect(html).toContain("Mudança de comportamento detectada");
+  });
+
+  it("web_diff_route_vs_golden_no_baseline_message", async () => {
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => C }, "cg2"), dir!);
+    const base = await start();
+    const html = await (await fetch(`${base}/runs/${C}/diff?vs=golden`)).text();
+    expect(html).toContain("Primeiro run deste cenário"); // sem golden → mensagem de baseline
+  });
+
+  it("web_diff_route_default_still_vs_previous", async () => {
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => G }, "cg3"), dir!);
+    await persistRun(buildRunEnvelope([stepBody('{"v":2}')], { now: () => 2, newId: () => C }, "cg3"), dir!);
+    const base = await start();
+    // sem ?vs → comportamento M5 (vs anterior): compara C vs G (anterior), detecta mudança
+    const html = await (await fetch(`${base}/runs/${C}/diff`)).text();
+    expect(html).toContain("Mudança de comportamento detectada");
+  });
+});

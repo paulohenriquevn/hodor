@@ -13,6 +13,8 @@ import {
   defaultVerdictsDir,
   defaultReviewsDir,
   findPreviousRun,
+  findGoldenRun,
+  scenarioKey,
   diffRuns,
   type RunEnvelope,
   type Verdict,
@@ -98,18 +100,21 @@ async function route(
     return postVerdict(id, req, dir, verdictsDir, reviewsDir);
   }
 
-  // M5 — diff de regressão vs run anterior do mesmo cenário (ADR D6).
+  // M5 — diff de regressão vs run anterior; M6 (ADR D6) — `?vs=golden` compara vs golden aprovado.
   const diffMatch = /^\/runs\/([^/]+)\/diff$/.exec(path);
   if (diffMatch) {
     const id = diffMatch[1]!;
     if (!RUN_ID_RE.test(id)) return r400("bad id"); // EC-4: :id permanece UUID-validado
     if (method !== "GET") return r405("GET");
+    const vs = new URLSearchParams((req.url ?? "").split("?")[1] ?? "").get("vs");
     try {
       const curr = await loadRun(join(dir, `${id}.json`));
+      // baseline = golden aprovado (?vs=golden) OU run anterior (default M5).
       // scenarioKey vem do run carregado, NUNCA da URL (EC-4 — não reabre traversal).
-      const prev = await findPreviousRun(curr, dir);
-      const diff = prev ? diffRuns(prev, curr) : null;
-      return { status: 200, contentType: "text/html; charset=utf-8", body: renderDiff(curr, prev, diff) };
+      const baseline =
+        vs === "golden" ? await findGoldenRun(scenarioKey(curr), dir, verdictsDir) : await findPreviousRun(curr, dir);
+      const diff = baseline ? diffRuns(baseline, curr) : null;
+      return { status: 200, contentType: "text/html; charset=utf-8", body: renderDiff(curr, baseline, diff) };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         return { status: 404, contentType: "text/plain", body: "run not found" };
@@ -251,6 +256,15 @@ async function listRuns(dir: string, verdictsDir: string): Promise<ListingItem[]
     }
     const s = await stat(join(dir, file));
     const verdict = await loadVerdict(id, verdictsDir);
+    // M6 (DoD #4): este run regride vs o golden aprovado do cenário? best-effort —
+    // um golden diferente do próprio run E com hasRegression marca o badge.
+    let regression = false;
+    try {
+      const golden = await findGoldenRun(scenarioKey(env), dir, verdictsDir);
+      regression = golden !== null && golden.runId !== id && diffRuns(golden, env).hasRegression;
+    } catch {
+      regression = false; // falha no cálculo do golden não derruba a listagem
+    }
     items.push({
       runId: id,
       name: env.name,
@@ -260,6 +274,7 @@ async function listRuns(dir: string, verdictsDir: string): Promise<ListingItem[]
       verdict: verdict?.verdict ?? null,
       // M4 (DoD #2): origem do cenário p/ o badge "gerado pelo agente".
       origin: env.provenance?.origin,
+      regression,
       mtimeMs: s.mtimeMs,
     });
   }
