@@ -159,17 +159,19 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
-### M4 — [ ] Geração de cenários assistida pelo agente
+### M4 — [x] Geração de cenários assistida pelo agente
 
 **Objective:** Dar ao agente tools MCP para *propor* cenários a partir de um endpoint ou de uma especificação, acelerando a autoria — sempre com revisão humana.
 
 **Definition of done:**
 
-- [ ] Tool MCP que, dado um endpoint (ou OpenAPI/curl de exemplo), o agente gera um cenário candidato (steps + asserts) como rascunho não-aprovado.
-- [ ] Cenários gerados entram no mesmo fluxo de revisão (M2/M3) marcados como "gerado pelo agente, pendente de revisão".
-- [ ] O humano consegue editar/refinar um cenário gerado antes de aprovar.
+- [x] Tool MCP que, dado um endpoint (ou OpenAPI/curl de exemplo), o agente gera um cenário candidato (steps + asserts) como rascunho não-aprovado.
+- [x] Cenários gerados entram no mesmo fluxo de revisão (M2/M3) marcados como "gerado pelo agente, pendente de revisão".
+- [x] O humano consegue editar/refinar um cenário gerado antes de aprovar.
 
 **Dependencies:** M1, M2, M3.
+
+**Delivered:** v0.5.0 (2026-06-19, PR #5). Tool MCP `save_scenario_draft` — o agente monta o `Scenario` (de endpoint/curl/OpenAPI) e a tool valida (zod) + persiste como rascunho não-aprovado em `drafts/{id}.json` commitável (humano edita no git antes de aprovar). Proveniência aditiva (`provenance`) propaga `Scenario → RunEnvelope → ReviewArtifact`; web app marca "🤖 gerado pelo agente · pendente de revisão". Aprovação só via verdict humano — `saveDraft` nunca executa/aprova (risco #1, provado no E2E). Risco #2 coberto por `provenance.sourceKind` (curl/endpoint/traffic). Segurança: credenciais de request redigidas antes de gravar o draft commitável; url do step validada na fronteira. ZERO dep nova (parser de curl deferido — o agente parseia nativamente). 146 testes, core ≥96%, 0 vulns. Provado também por MCP real (stdio) contra a API do GitHub. Artefatos: `knowledge-base/plans/m4-scenario-generation-plan.md`, `.../reviews/m4-scenario-generation-review-2026-06-19.md` (READY_TO_MERGE), `.../releases/v0.5.0-release.md`.
 
 **Top risks:**
 
