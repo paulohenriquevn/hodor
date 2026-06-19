@@ -138,17 +138,19 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
-### M3 — [ ] Persistência versionável + estado de revisão (fecha o V1)
+### M3 — [x] Persistência versionável + estado de revisão (fecha o V1)
 
 **Objective:** Tornar cenários, execuções e verdicts artefatos git-friendly, revisáveis por diff, fechando o loop E2E do critério de V1.
 
 **Definition of done:**
 
-- [ ] Cenários e resultados são arquivos texto estáveis e diff-amigáveis (ordenação determinística, sem ruído volátil no diff), versionáveis no git.
-- [ ] O verdict humano (de M2) é gravado no artefato versionado, ligando a aprovação ao cenário+execução específicos.
-- [ ] Critério de V1 demonstrado: o loop completo agente→execução→revisão→verdict roda ponta a ponta sobre uma API real e tudo fica registrado em arquivos commitáveis.
+- [x] Cenários e resultados são arquivos texto estáveis e diff-amigáveis (ordenação determinística, sem ruído volátil no diff), versionáveis no git.
+- [x] O verdict humano (de M2) é gravado no artefato versionado, ligando a aprovação ao cenário+execução específicos.
+- [x] Critério de V1 demonstrado: o loop completo agente→execução→revisão→verdict roda ponta a ponta sobre uma API real e tudo fica registrado em arquivos commitáveis.
 
 **Dependencies:** M2.
+
+**Delivered:** v0.4.0 (2026-06-19, PR #4). `normalizeRun` (strip de `response.timings` + headers voláteis + prefixos `x-amz-`/`x-amzn-`/`cf-`, redação de credenciais de request) + `stableStringify` (chaves ordenadas) + `reviewArtifact` (`{artifactVersion:1, scenarioName?, runId, createdAt, verdict, steps[]}`) gravado em `reviews/{runId}.json` commitável ao registrar o verdict. `runs/`+`verdicts/` efêmeros. Provado pelo E2E `e2e_v1_loop_writes_committable_review_artifact` (2 runs do mesmo cenário → `steps` byte-idênticos). Limitação consciente: ruído no corpo da resposta não é normalizado (escopo M5). 113 testes, core 98.25% lines, 0 vulns. **Fecha o V1** (M0–M3 `[x]`).
 
 **Top risks:**
 
