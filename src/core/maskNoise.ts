@@ -22,13 +22,13 @@ export function maskNoise(body: string, noisePaths: string[]): string {
   }
   for (const path of noisePaths) {
     try {
-      const nodes = JSONPath({ path, json, resultType: "all", wrap: true }) as Array<{
-        parent: Record<string, unknown> | unknown[] | null;
+      const nodes = JSONPath({ path, json: json as object, resultType: "all", wrap: true }) as unknown as Array<{
+        parent: Record<string | number, unknown> | null;
         parentProperty: string | number | null;
       }>;
       for (const node of nodes) {
         if (node.parent != null && node.parentProperty != null) {
-          (node.parent as Record<string | number, unknown>)[node.parentProperty] = NOISE_SENTINEL;
+          node.parent[node.parentProperty] = NOISE_SENTINEL;
         }
       }
     } catch {
