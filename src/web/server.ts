@@ -6,8 +6,12 @@ import {
   loadRun,
   loadVerdict,
   saveVerdict,
+  buildReviewArtifact,
+  saveReviewArtifact,
+  ReviewArtifactSchema,
   defaultRunsDir,
   defaultVerdictsDir,
+  defaultReviewsDir,
   type RunEnvelope,
   type Verdict,
 } from "../core/index.js";
@@ -48,9 +52,10 @@ interface Reply {
 export function buildWebServer(
   dir: string = defaultRunsDir(),
   verdictsDir: string = defaultVerdictsDir(),
+  reviewsDir: string = defaultReviewsDir(),
 ): Server {
   return createServer((req, res) => {
-    void route(req, dir, verdictsDir)
+    void route(req, dir, verdictsDir, reviewsDir)
       .then(({ status, contentType, body, location, allow }) => {
         const headers: Record<string, string> = { "content-type": contentType };
         if (location) headers["location"] = location;
@@ -65,7 +70,12 @@ export function buildWebServer(
   });
 }
 
-async function route(req: IncomingMessage, dir: string, verdictsDir: string): Promise<Reply> {
+async function route(
+  req: IncomingMessage,
+  dir: string,
+  verdictsDir: string,
+  reviewsDir: string,
+): Promise<Reply> {
   const method = req.method ?? "GET";
   const path = (req.url ?? "/").split("?")[0] ?? "/";
 
@@ -83,7 +93,7 @@ async function route(req: IncomingMessage, dir: string, verdictsDir: string): Pr
     const id = verdictMatch[1]!;
     if (!RUN_ID_RE.test(id)) return r400("bad id");
     if (method !== "POST") return r405("POST");
-    return postVerdict(id, req, dir, verdictsDir);
+    return postVerdict(id, req, dir, verdictsDir, reviewsDir);
   }
 
   const runMatch = /^\/runs\/([^/]+)$/.exec(path);
@@ -111,11 +121,13 @@ async function postVerdict(
   req: IncomingMessage,
   dir: string,
   verdictsDir: string,
+  reviewsDir: string,
 ): Promise<Reply> {
   if (!RUN_ID_RE.test(id)) return { status: 400, contentType: "text/plain", body: "bad id" };
   // Q2: o run precisa existir antes de registrar o verdict.
+  let env: RunEnvelope;
   try {
-    await loadRun(join(dir, `${id}.json`));
+    env = await loadRun(join(dir, `${id}.json`));
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return { status: 404, contentType: "text/plain", body: "run not found" };
@@ -141,13 +153,21 @@ async function postVerdict(
     ...(note ? { note } : {}),
     decidedAt: new Date().toISOString(),
   };
+  // EC-1 (M3): build o artefato versionável EM MEMÓRIA antes de gravar qualquer
+  // coisa — um erro de validação (verdict inválido) ou de normalização aborta
+  // ANTES de criar verdict órfão.
+  let reviewArtifact;
   try {
-    await saveVerdict(verdict, verdictsDir);
+    reviewArtifact = ReviewArtifactSchema.parse(buildReviewArtifact(env, verdict));
   } catch (err) {
-    // F-arch-1: SÓ erro de validação (cliente) vira 400; falha de I/O sobe (→ 500).
+    // F-arch-1 + EC-3 do M2: verdict inválido (cliente) → 400, ANTES de qualquer
+    // escrita (EC-1 do M3 — sem verdict órfão); falha inesperada sobe (→ 500).
     if (err instanceof ZodError) return r400("invalid verdict");
     throw err;
   }
+  // Persiste: verdict (M2, live) + artefato versionável (M3, commitável).
+  await saveVerdict(verdict, verdictsDir);
+  await saveReviewArtifact(reviewArtifact, reviewsDir);
   return { status: 303, contentType: "text/plain", body: "", location: `/runs/${id}` };
 }
 
