@@ -26,6 +26,8 @@ export interface StepDiff {
 export interface RunDiff {
   steps: StepDiff[];
   stepCountChanged: boolean;
+  /** F-dom-1: as regras de noise diferem entre os runs comparados (revisar com atenção). */
+  noiseChanged: boolean;
   hasRegression: boolean;
 }
 
@@ -50,25 +52,34 @@ function diffHeaders(prev: Record<string, string>, curr: Record<string, string>)
   return diffs;
 }
 
-function diffStep(prev: NormalizedStep, curr: NormalizedStep, index: number, noise: string[]): StepDiff {
+function diffStep(prev: NormalizedStep, curr: NormalizedStep, index: number, prevNoise: string[], currNoise: string[]): StepDiff {
   const statusChanged = prev.response.status !== curr.response.status || prev.response.statusText !== curr.response.statusText;
   const headerDiffs = diffHeaders(prev.response.headers, curr.response.headers);
-  const bodyChanged = normalizedBody(prev.response.body, noise) !== normalizedBody(curr.response.body, noise);
+  // F-dom-1: cada lado é mascarado com o SEU próprio noise. Se o noise foi alterado
+  // entre os runs, o campo aparece como mudança (SURFACE) em vez de ser escondido nos
+  // dois lados — não escondemos uma regressão real só porque o noise mudou (risco #1).
+  const bodyChanged = normalizedBody(prev.response.body, prevNoise) !== normalizedBody(curr.response.body, currNoise);
   return { stepIndex: index, statusChanged, headerDiffs, bodyChanged };
 }
 
+function sameNoise(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
 export function diffRuns(prev: RunEnvelope, curr: RunEnvelope): RunDiff {
-  const noise = curr.noise ?? prev.noise ?? [];
+  const prevNoise = prev.noise ?? [];
+  const currNoise = curr.noise ?? [];
+  const noiseChanged = !sameNoise(prevNoise, currNoise);
   const a = normalizeRun(prev).steps;
   const b = normalizeRun(curr).steps;
   const stepCountChanged = a.length !== b.length;
   const n = Math.min(a.length, b.length);
   const steps: StepDiff[] = [];
   for (let i = 0; i < n; i++) {
-    steps.push(diffStep(a[i]!, b[i]!, i, noise));
+    steps.push(diffStep(a[i]!, b[i]!, i, prevNoise, currNoise));
   }
   const hasRegression =
     stepCountChanged ||
     steps.some((s) => s.statusChanged || s.bodyChanged || s.headerDiffs.length > 0);
-  return { steps, stepCountChanged, hasRegression };
+  return { steps, stepCountChanged, noiseChanged, hasRegression };
 }

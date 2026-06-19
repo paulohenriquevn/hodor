@@ -222,14 +222,14 @@ describe("M5 — renderDiff (regressão)", () => {
   const prevEnv = { ...envelope([step()]), runId: "prev" } as RunEnvelope;
 
   it("render_diff_highlights_status_change", () => {
-    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: true, headerDiffs: [], bodyChanged: false }], stepCountChanged: false, hasRegression: true };
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: true, headerDiffs: [], bodyChanged: false }], stepCountChanged: false, noiseChanged: false, hasRegression: true };
     const html = renderDiff(currEnv, prevEnv, diff);
     expect(html).toContain("Mudança de comportamento detectada");
     expect(html).toContain("status mudou");
   });
 
   it("render_diff_shows_no_regression_when_identical", () => {
-    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: false, headerDiffs: [], bodyChanged: false }], stepCountChanged: false, hasRegression: false };
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: false, headerDiffs: [], bodyChanged: false }], stepCountChanged: false, noiseChanged: false, hasRegression: false };
     expect(renderDiff(currEnv, prevEnv, diff)).toContain("Sem mudança de comportamento");
   });
 
@@ -238,7 +238,7 @@ describe("M5 — renderDiff (regressão)", () => {
   });
 
   it("render_diff_escapes_header_diff_content", () => {
-    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: false, headerDiffs: [{ key: "x", prev: "<script>alert(1)</script>", curr: "y" }], bodyChanged: false }], stepCountChanged: false, hasRegression: true };
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: false, headerDiffs: [{ key: "x", prev: "<script>alert(1)</script>", curr: "y" }], bodyChanged: false }], stepCountChanged: false, noiseChanged: false, hasRegression: true };
     const html = renderDiff(currEnv, prevEnv, diff);
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;");

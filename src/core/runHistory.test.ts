@@ -115,6 +115,27 @@ describe("pruneRunHistory", () => {
     const vdir = await tmp();
     for (let i = 1; i <= 3; i++) await persistRun(mkEnv({ runId: `a${i}`, createdAt: `2026-06-19T00:00:0${i}.000Z` }), dir);
     await writeFile(join(dir, "corrupt.json"), "{ broken", "utf8");
-    await expect(pruneRunHistory("cenário-a", dir, 1, vdir)).resolves.toBeUndefined();
+    await expect(pruneRunHistory("cenário-a", dir, 1, vdir)).resolves.toBeTruthy();
+  });
+
+  it("prune_run_history_returns_observable_stats", async () => {
+    // F-wire-1: a poda retorna {removed, pinned, kept} p/ observabilidade do risco #2
+    const dir = await tmp();
+    const vdir = await tmp();
+    for (let i = 1; i <= 4; i++) await persistRun(mkEnv({ runId: `a${i}`, createdAt: `2026-06-19T00:00:0${i}.000Z` }), dir);
+    const res = await pruneRunHistory("cenário-a", dir, 2, vdir);
+    expect(res.removed).toBe(2);
+    expect(res.kept).toBe(2);
+    expect(res.pinned).toBe(0);
+  });
+});
+
+import { RunEnvelopeSchema } from "./runSchema.js";
+describe("RunEnvelope runId path-safety (F-dom-sec-1)", () => {
+  it("run_envelope_rejects_path_unsafe_runId", () => {
+    const evil = { schemaVersion: 1, runId: "../secret/etc", createdAt: "x", steps: [{ request: { method: "GET", url: "http://x", headers: {} }, response: { status: 200, statusText: "OK", headers: {}, body: "", timings: { startedAt: "x", durationMs: 0 } } }] };
+    expect(RunEnvelopeSchema.safeParse(evil).success).toBe(false);
+    const ok = { ...evil, runId: "a1" };
+    expect(RunEnvelopeSchema.safeParse(ok).success).toBe(true);
   });
 });

@@ -298,6 +298,9 @@ export function renderDiff(curr: RunEnvelope, prev: RunEnvelope | null, diff: Ru
     const countNote = diff.stepCountChanged
       ? `<p class='diff-changed'>Número de steps mudou: ${prev.steps.length} → ${curr.steps.length}.</p>`
       : "";
+    const noiseNote = diff.noiseChanged
+      ? `<p class='diff-changed'>⚠ As regras de noise mudaram entre os runs — revise o diff com atenção.</p>`
+      : "";
     const rows = diff.steps
       .map((s) => {
         const headerCell =
@@ -316,8 +319,9 @@ export function renderDiff(curr: RunEnvelope, prev: RunEnvelope | null, diff: Ru
         </tr>`;
       })
       .join("");
-    bodyHtml = `${banner}${countNote}
-    <p class='meta'>atual <code>${escapeHtml(curr.runId)}</code> vs anterior <code>${escapeHtml(prev.runId)}</code></p>
+    bodyHtml = `${banner}${countNote}${noiseNote}
+    <p class='meta'>atual <code>${escapeHtml(curr.runId)}</code> vs anterior <code>${escapeHtml(prev.runId)}</code></p>`;
+    bodyHtml += `
     <table class='diff'><thead><tr><th>Step</th><th>Status</th><th>Headers (não-voláteis)</th><th>Body</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
   return `<!doctype html>

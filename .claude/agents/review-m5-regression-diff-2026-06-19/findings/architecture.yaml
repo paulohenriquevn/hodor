@@ -1,0 +1,221 @@
+agent: review-m5-regression-diff-architecture
+review_target: origin/main..develop for plan m5-regression-diff
+plan: .claude/knowledge-base/plans/m5-regression-diff-plan.md
+rules_read:
+  - .claude/rules/architecture.md
+  - .claude/knowledge-base/plans/m5-regression-diff-plan.md
+summary_verdict: >
+  Architecture is sound. DIP boundary clean (grep "from ../web|../mcp" in src/core/
+  is empty). SRP cleanly separated: maskNoise (body normalization) / diffRuns (pure
+  comparison) / runHistory (I/O persistence+pruning) are three distinct modules with
+  single reasons to change. Reuse is additive without refactor (diffRuns reuses
+  normalizeRun+maskNoise+stableStringify; noise field is optional/additive across
+  Scenario+RunEnvelope schemas). ADRs D1-D6 honored. ZERO new dependency (jsonpath-plus,
+  node:crypto stdlib reused). No BLOCKER, no HIGH. Findings below are MEDIUM/LOW/INFO.
+
+findings:
+  # ---------------------------------------------------------------- DIP / boundary
+  - id: F-arch-1
+    severity: INFO
+    file: src/core/index.ts
+    line: 56
+    plan_ref: Global DoD "DIP preservado" + ADR D2 (fronteira DIP)
+    summary: DIP boundary intact — core exports M5 surface; no import of web/mcp from core.
+    evidence: |
+      grep -rn 'from "../web"\|from "../mcp"' src/core/  → empty (exit 1).
+      src/core/index.ts adds only intra-core re-exports:
+        export { maskNoise, NOISE_SENTINEL } from "./maskNoise.js";
+        export { diffRuns, ... } from "./diffRuns.js";
+        export { scenarioKey, findPreviousRun, pruneRunHistory, defaultHistoryLimit } from "./runHistory.js";
+      Adapters (web/server.ts, mcp/server.ts) import only from ../core/index.js.
+    recommended_action: None — boundary is correct.
+
+  # ---------------------------------------------------------------- SRP separation
+  - id: F-arch-2
+    severity: INFO
+    file: src/core/diffRuns.ts
+    line: 60
+    plan_ref: ADR D3 ("diffRuns core puro, sem I/O")
+    summary: diffRuns is a pure function (no I/O); SRP respected — it only compares.
+    evidence: |
+      Imports are types + normalizeRun + maskNoise + stableStringify. No node:fs,
+      no fetch, no Date.now. diffRuns(prev, curr) takes two already-loaded envelopes;
+      the caller (web/server.ts) is responsible for loading. Question (a)+(b)
+      confirmed: pure diff vs I/O-bound runHistory cleanly separated across modules.
+    recommended_action: None.
+
+  - id: F-arch-3
+    severity: INFO
+    file: src/core/runHistory.ts
+    line: 39
+    plan_ref: ADR D4/D5 (scenarioKey/findPreviousRun/pruneRunHistory)
+    summary: runHistory owns all history I/O (readdir/readFile/rm/access), isolated from pure diff.
+    evidence: |
+      loadAllRuns/findPreviousRun/pruneRunHistory perform fs; diffRuns never does.
+      The orchestration (load prev → diff) lives in the web adapter, not in core
+      business code — composition at the boundary, per architecture.md §1.
+    recommended_action: None.
+
+  # ---------------------------------------------------------------- maskNoise mutation
+  - id: F-arch-4
+    severity: INFO
+    file: src/core/maskNoise.ts
+    line: 19
+    plan_ref: T1.2 Acceptance ("nunca muta input") + ADR D2
+    summary: maskNoise mutates the freshly-parsed object, never the input string — correct.
+    evidence: |
+      const json = JSON.parse(body);  // fresh deep copy owned by the function
+      ... node.parent[node.parentProperty] = NOISE_SENTINEL;  // mutates the copy
+      return JSON.stringify(json);
+      The string parameter `body` is immutable; the mutated graph is the local parse
+      result. Question (d) confirmed correct. Test mask_noise_does_not_mutate_input
+      guards the string-level invariant.
+    recommended_action: None.
+
+  # ---------------------------------------------------------------- pruneAfterPersist coupling
+  - id: F-arch-5
+    severity: LOW
+    file: src/mcp/server.ts
+    line: 16
+    plan_ref: ADR D5 ("Chamado após persistRun no caminho das tools MCP")
+    summary: >
+      Best-effort prune-after-persist is acceptable adapter-level coupling, but the
+      swallowed error is logged with a raw string instead of a typed/structured error
+      object (Unbreakable Rule 8 — fail-claro/contexto).
+    evidence: |
+      async function pruneAfterPersist(env: RunEnvelope): Promise<void> {
+        try { await pruneRunHistory(scenarioKey(env)); }
+        catch (err) { console.error(JSON.stringify({ event: "prune_failed", error: String(err) })); }
+      }
+      Placing prune in the adapter (not in persistRun) is the right SRP call — D5
+      says "persistRun inalterado; retenção é função à parte". Best-effort is
+      defensible: the run is already durably written; a prune failure must not lose
+      data. The only nit: `String(err)` collapses stack/cause; structured logging
+      elsewhere in this file (run_request/run_scenario metrics) is richer.
+    recommended_action: >
+      Keep the best-effort pattern. Optionally include scenarioKey + err.stack (or
+      err.message) in the log payload so an ops reader can localize which scenario's
+      retention silently failed. Not blocking.
+
+  - id: F-arch-6
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 75
+    plan_ref: ADR D5 + wiring triad pillar (a) caller
+    summary: pruneAfterPersist wired at both MCP run paths (run_request + run_scenario) additively.
+    evidence: |
+      Both `const path = await persistRun(env);` sites now call
+      `await pruneAfterPersist(env);` immediately after. Tools' inputSchema/outputs
+      unchanged — additive, preserves M0-M4 tool contracts.
+    recommended_action: None.
+
+  # ---------------------------------------------------------------- additive schema reuse
+  - id: F-arch-7
+    severity: INFO
+    file: src/core/scenarioSchema.ts
+    line: 59
+    plan_ref: ADR D1 + Coverage Matrix #6 (backward-compat)
+    summary: noise field is optional/additive on both Scenario and RunEnvelope; schemaVersion stays 1.
+    evidence: |
+      scenarioSchema.ts:59  noise: z.array(z.string()).optional(),
+      runSchema.ts:64       noise: z.array(z.string()).optional(),
+      runStore.ts:42        ...(noise !== undefined ? { noise } : {}),  // omitted when absent
+      runScenario.ts:45     buildRunEnvelope(steps, deps, scenario.name, scenario.provenance, scenario.noise);
+      Mirrors the M4 provenance pattern exactly. Runs/scenarios without noise stay valid.
+    recommended_action: None.
+
+  # ---------------------------------------------------------------- reuse without refactor
+  - id: F-arch-8
+    severity: INFO
+    file: src/core/diffRuns.ts
+    line: 33
+    plan_ref: ADR D3 ("Reusa normalizeRun+stableStringify (DRY)") + Coverage #7 (zero dep)
+    summary: >
+      diffRuns reuses normalizeRun (headers/timings) + maskNoise (body) + stableStringify
+      (order-insensitive compare) without modifying any of them. Noise handling is
+      additive — normalizeRun untouched.
+    evidence: |
+      normalizedBody() = stableStringify(JSON.parse(maskNoise(body, noise))).
+      normalizeRun.ts has zero M5 edits (git diff shows file not in M5 set).
+      evalCapture.ts only gained a doc comment (no behavior change); maskNoise calls
+      JSONPath directly with resultType:"all" rather than going through evalJsonPath
+      (which returns only the first match) — a justified divergence, same lib/vocabulary.
+    recommended_action: None.
+
+  - id: F-arch-9
+    severity: LOW
+    file: src/core/diffRuns.ts
+    line: 33
+    plan_ref: ADR D3 / KISS (Rule 10)
+    summary: >
+      normalizedBody double-parses (maskNoise parses+stringifies, then
+      stableStringify re-parses). Correct and pure, but redundant work; minor and
+      acceptable at local run scale.
+    evidence: |
+      function normalizedBody(body, noise) {
+        const masked = maskNoise(body, noise);            // JSON.parse + JSON.stringify
+        try { return stableStringify(JSON.parse(masked)); } // JSON.parse again
+        catch { return masked; }
+      }
+      Two parses per body per side. Mitigated: bodies are HTTP response bodies at
+      local volume; correctness > micro-opt. Drawbacks table already flags large-body
+      page inflation (truncation reused), not compute.
+    recommended_action: >
+      Acceptable as-is (KISS). If profiled hot later, maskNoise could expose a variant
+      returning the parsed object to skip one parse. Not blocking — do NOT refactor now (YAGNI).
+
+  # ---------------------------------------------------------------- DIP nuance in maskNoise typing
+  - id: F-arch-10
+    severity: LOW
+    file: src/core/maskNoise.ts
+    line: 25
+    plan_ref: architecture.md §6 (leaky abstraction) / no-any policy
+    summary: >
+      JSONPath result is cast through `as unknown as Array<{parent,parentProperty}>`.
+      No `any` (policy respected), but the double-cast hard-codes jsonpath-plus's
+      internal node shape into the domain module.
+    evidence: |
+      const nodes = JSONPath({ path, json, resultType: "all", wrap: true }) as unknown as Array<{
+        parent: Record<string | number, unknown> | null;
+        parentProperty: string | number | null;
+      }>;
+      The {parent, parentProperty} contract is jsonpath-plus's pointer/all shape. It
+      is the documented contract for resultType:"all", so this is a controlled coupling,
+      not a leak across a portability boundary (jsonpath-plus is the chosen single
+      jsonpath vocabulary per evalCapture). Guarded by try/catch (malformed path → no-op).
+    recommended_action: >
+      Acceptable. Optionally define a local `interface JsonPathNode { parent: ...;
+      parentProperty: ... }` and cast to it for readability. Cosmetic; not blocking.
+
+  # ---------------------------------------------------------------- web adapter
+  - id: F-arch-11
+    severity: INFO
+    file: src/web/server.ts
+    line: 101
+    plan_ref: ADR D6 + EC-4 (scenarioKey from loaded run, never URL)
+    summary: Diff route validates :id with RUN_ID_RE before fs, derives scenarioKey from loaded run.
+    evidence: |
+      if (!RUN_ID_RE.test(id)) return r400("bad id");
+      const curr = await loadRun(join(dir, `${id}.json`));
+      const prev = await findPreviousRun(curr, dir);  // scenarioKey(curr) internal — not from URL
+      ENOENT → 404; other errors rethrow (fail-loud). Adapter orchestrates pure core;
+      no business logic leaked into the route. EC-4 traversal closure preserved.
+    recommended_action: None.
+
+  - id: F-arch-12
+    severity: INFO
+    file: src/web/render.ts
+    line: 285
+    plan_ref: ADR D3/D6 ("core diz O QUE mudou; a web pinta") + SRP
+    summary: renderDiff is presentation-only; consumes RunDiff, performs no comparison. XSS escape inherited.
+    evidence: |
+      renderDiff(curr, prev, diff) only formats; all branching is on diff.* booleans
+      computed by core. Every dynamic value passes escapeHtml (runId, name, header
+      keys/values, status). No domain logic in the view — SRP across core/web upheld.
+    recommended_action: None.
+
+blocker_count: 0
+high_count: 0
+medium_count: 0
+low_count: 3
+info_count: 9

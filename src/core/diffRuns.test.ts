@@ -73,4 +73,15 @@ describe("diffRuns", () => {
     expect(d.stepCountChanged).toBe(true);
     expect(d.hasRegression).toBe(true);
   });
+
+  it("diff_runs_surfaces_change_when_noise_asymmetric", () => {
+    // F-dom-1: noise adicionado SÓ no run atual NÃO esconde a regressão no baseline.
+    // prev sem noise (total=100), curr com noise $.total (total=500) → cada lado mascarado
+    // com seu próprio noise → diferem → bodyChanged true (regressão SURFACE, não escondida).
+    const prev = env([step({ body: '{"total":100}' })]); // sem noise
+    const curr = env([step({ body: '{"total":500}' })], { noise: ["$.total"] });
+    const d = diffRuns(prev, curr);
+    expect(d.steps[0]!.bodyChanged).toBe(true);
+    expect(d.noiseChanged).toBe(true); // regras de noise diferem → revisar com atenção
+  });
 });

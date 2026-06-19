@@ -19,7 +19,9 @@ import {
  * (falha de poda não derruba a tool — o run já foi gravado). */
 async function pruneAfterPersist(env: RunEnvelope): Promise<void> {
   try {
-    await pruneRunHistory(scenarioKey(env));
+    const { removed, pinned, kept } = await pruneRunHistory(scenarioKey(env));
+    // Observável (pillar c, F-wire-1): a retenção (risco #2) loga no SUCESSO, não só na falha.
+    console.error(JSON.stringify({ event: "prune_history", scenario: scenarioKey(env), removed, pinned, kept }));
   } catch (err) {
     console.error(JSON.stringify({ event: "prune_failed", error: String(err) }));
   }

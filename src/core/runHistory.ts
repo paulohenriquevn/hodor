@@ -1,6 +1,6 @@
 import { readdir, readFile, rm, access } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { RunEnvelopeSchema, type RunEnvelope } from "./runSchema.js";
 import { stableStringify } from "./stableStringify.js";
 import { defaultRunsDir } from "./runStore.js";
@@ -73,19 +73,36 @@ export async function findPreviousRun(curr: RunEnvelope, dir: string = defaultRu
  * removendo os mais antigos — EXCETO runs aprovados (com `verdicts/{id}.json`),
  * que são PINNED (audit-trail-rotation "approved never rotates"). Clampa limit ≥ 1.
  */
+export interface PruneResult {
+  removed: number;
+  pinned: number;
+  kept: number;
+}
+
 export async function pruneRunHistory(
   key: string,
   dir: string = defaultRunsDir(),
   limit: number = defaultHistoryLimit(),
   verdictsDir: string = defaultVerdictsDir(),
-): Promise<void> {
+): Promise<PruneResult> {
   const clamped = Number.isInteger(limit) && limit > 0 ? limit : Math.max(1, defaultHistoryLimit());
   const ofScenario = (await loadAllRuns(dir)).filter((r) => scenarioKey(r) === key).sort(compareRuns);
   const toConsiderForDeletion = ofScenario.slice(0, Math.max(0, ofScenario.length - clamped));
+  let removed = 0;
+  let pinned = 0;
   for (const run of toConsiderForDeletion) {
-    if (await hasVerdict(run.runId, verdictsDir)) continue; // EC-1: aprovado é pinado
-    await rm(join(dir, `${run.runId}.json`), { force: true });
+    if (await hasVerdict(run.runId, verdictsDir)) {
+      pinned += 1; // EC-1: run aprovado é pinado (audit-trail-rotation "approved never rotates")
+      continue;
+    }
+    // F-dom-sec-1 defense-in-depth: o caminho do rm DEVE ficar dentro de `dir`.
+    const target = join(dir, `${run.runId}.json`);
+    if (resolve(target).startsWith(resolve(dir) + sep)) {
+      await rm(target, { force: true });
+      removed += 1;
+    }
   }
+  return { removed, pinned, kept: ofScenario.length - removed };
 }
 
 async function hasVerdict(runId: string, verdictsDir: string): Promise<boolean> {
