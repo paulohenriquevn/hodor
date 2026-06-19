@@ -50,6 +50,25 @@ diferentes geram artefatos com `steps` idênticos (diff estável).
 - **EC-3** verdict em `verdicts/` (live) + `reviews/` (versionado) — propósitos distintos, intencional.
 - ADRs D1–D5 honrados (artefato separado; normalizeRun strip; stableStringify nativo; artifactVersion; escrito ao registrar verdict). Comparação run-vs-run = M5 (fora de escopo).
 
+## Achados de review absorvidos (review-m3-versionable-persistence-2026-06-19)
+
+0 BLOCKER; 6 HIGH corrigidos antes de READY_TO_MERGE:
+
+| ID | Severidade | Correção |
+|---|---|---|
+| F-sec-1 | HIGH | `normalizeRun` redige (`<redacted>`) headers de request sensíveis (authorization/cookie/x-api-key/...) — segredo não vai pro git commitável |
+| F-xval-1 | HIGH | `review-e2e.test.ts` passa a usar `reviewsDir` em tmpdir; artefato vazado `reviews/...aa.json` removido do índice (`git rm --cached`) |
+| F-dom-1 | HIGH | **Documentado** (ver Limitações conhecidas) — body-noise é escopo M5; sem scope-creep |
+| F-tests-1 | HIGH | teste `load_review_artifact_throws_on_corrupt_file` (fail-loud) |
+| F-tests-2 | HIGH | teste `build_review_artifact_omits_scenario_name_for_unnamed_run` (compat M0 sem name) |
+| F-tests-3 | HIGH | regressão EC-1: verdict inválido → 400 sem órfão de verdict NEM de artefato |
+
+MEDIUMs também corrigidos: F-sec-2 (`assertSafeRunId` path-safe antes do join); F-dom-2 (VOLATILE_HEADERS ampliado + prefixos `x-amz-`/`x-amzn-`/`cf-`); F-arch-5 (`verdicts/` gitignored — `reviews/` é o único canônico commitável); F-dom-4 (wording honesto: `steps` byte-idênticos, não o arquivo inteiro — `createdAt` é metadata volátil).
+
+## Limitações conhecidas (honestidade — Rule 3)
+
+- **Ruído no corpo da resposta NÃO é normalizado (F-dom-1).** `normalizeRun` remove voláteis de **protocolo** (timings, headers voláteis). Um valor volátil DENTRO do `response.body` (ex.: um timestamp do servidor no JSON) permanece e gera diff entre execuções. Normalização path-based de body (estilo keploy `noise`) exige configuração de ruído por-cenário, que **não existe ainda** — é escopo do M5 (comparação run-vs-run). Para o V1, a estabilidade de diff vale para a camada de protocolo; ruído de aplicação no body é responsabilidade do design do cenário. Deferimento consciente (YAGNI), não esquecimento.
+
 ## Backward-compatibility
 - `normalizeRun`/`reviewArtifact` reusam `RunEnvelope`/`Verdict` sem mudança de schema.
 - `POST /runs/:id/verdict` mantém 303; só adiciona a escrita do artefato.

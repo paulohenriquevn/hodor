@@ -1,0 +1,122 @@
+agent: review-m3-versionable-persistence-domain-security
+review_target: main..HEAD for plan m3-versionable-persistence
+domain: security
+domain_specific_patterns_checked:
+  - "credential-in-git: request headers (Authorization/Cookie/api-key) persisted into committable reviews/{id}.json"
+  - "path-traversal: runId UUID validation before path join in saveReviewArtifact/loadReviewArtifact"
+  - "prototype-pollution: stableStringify sortKeys assignment + JSON.parse on load path"
+  - "boundary-validation: zod .parse on loadReviewArtifact (fronteira)"
+  - "secret-redaction: normalizeRun strips volatile headers — request side vs response side"
+findings:
+  - id: F-sec-1
+    severity: HIGH
+    file: src/core/normalizeRun.ts
+    line: 48-62
+    plan_ref: "ADR D2 — normalizeRun strip de voláteis; ADR D1/D5 — reviews/ é commitável/compartilhado via PR"
+    domain_anchor: "loop-security-audit: secrets-never-committed invariant; CLAUDE.md §8 (fail-loud não cobre vazamento silencioso); rules/public-copy.md irrelevante mas §threat-model do M3 assume single-user"
+    summary: >-
+      VAZAMENTO DE CREDENCIAL NO GIT. normalizeRun preserva request.headers VERBATIM
+      (linha 51: `request: { ...step.request, headers: { ...step.request.headers } }`).
+      O filtro VOLATILE_HEADERS / normalizeHeaders é aplicado APENAS a response.headers
+      (linha 55), NUNCA a request.headers. Logo Authorization, Cookie, x-api-key e
+      qualquer bearer token enviados na request são gravados em reviews/{id}.json — que
+      por design do M3 (ADR D1/D5) NÃO é gitignored e é feito para ser COMMITADO e
+      compartilhado via PR. A cadeia é completa e real: executeRequest.ts:67 captura
+      `headers: headers ?? {}` verbatim → runs/{id}.json → buildReviewArtifact →
+      normalizeRun (preserva request.headers) → saveReviewArtifact grava em reviews/
+      (commitável). Resultado: um `git add reviews/` vaza o token de Authorization do
+      usuário para o histórico do git e para o PR.
+    evidence: |
+      src/core/normalizeRun.ts:48-62 — filtro só no response, request intacto:
+      ```ts
+      function normalizeStep(step: RunStep): NormalizedStep {
+        const normalized: NormalizedStep = {
+          request: { ...step.request, headers: { ...step.request.headers } }, // <-- Authorization/Cookie PRESERVADOS
+          response: {
+            status: step.response.status,
+            statusText: step.response.statusText,
+            headers: normalizeHeaders(step.response.headers),  // <-- filtro SÓ no response
+            body: step.response.body,
+          },
+        };
+      ```
+      src/core/reviewArtifact.ts:17-27 — NormalizedStepSchema usa CapturedRequestSchema
+      cujo `headers: z.record(z.string())` aceita/grava todo header de request.
+      src/core/executeRequest.ts:64-69 — captura request.headers sem redação:
+      ```ts
+      request: { method, url, headers: headers ?? {}, ... }
+      ```
+      Nota: `set-cookie` está em VOLATILE_HEADERS, mas é header de RESPONSE; o header
+      de REQUEST equivalente é `cookie` (singular) e NÃO é filtrado (e nem está na lista).
+    recommended_action: >-
+      Adicionar uma lista de SENSITIVE_REQUEST_HEADERS (authorization, cookie, proxy-authorization,
+      x-api-key, x-auth-token, api-key, ...) e redigir (substituir valor por "<redacted>" — NÃO
+      remover, para o diff revelar QUE havia um header) os headers sensíveis de request.headers em
+      normalizeStep, espelhando o que já é feito no response. Redação > remoção aqui porque a
+      presença do header é informação de review legítima; o VALOR é o segredo. Adicionar um RED test
+      `normalize_run_redacts_sensitive_request_headers()`. Atualizar ADR D2 do plano (que hoje só lista
+      voláteis de response) para cobrir o request-side. Esta é a falha de segurança mais séria do M3 —
+      o artefato é explicitamente projetado para ser commitado/compartilhado.
+
+  - id: F-sec-2
+    severity: MEDIUM
+    file: src/core/reviewArtifact.ts
+    line: 59-68
+    plan_ref: "EC-1 (M0) — id validado UUID antes do path join (anti path-traversal); Baseline Context §Architecture boundaries (validação na fronteira)"
+    domain_anchor: "rules/architecture.md §2 (validação na fronteira); CLAUDE.md §8 (valide inputs nas fronteiras)"
+    summary: >-
+      PATH JOIN COM runId NÃO-VALIDADO COMO PATH-SAFE. saveReviewArtifact monta
+      `join(dir, ${valid.runId}.json)` e loadReviewArtifact monta `join(dir, ${runId}.json)`,
+      mas runId só passa por `z.string().min(1)` — sem restrição de formato UUID nem de
+      caracteres de path. O postVerdict valida o `id` da URL com RUN_ID_RE, PORÉM o filename
+      do artefato deriva de `env.runId` (CONTEÚDO do arquivo de run carregado), não do `id`
+      validado da URL. RunEnvelopeSchema.runId também é só `z.string().min(1)`. Logo um run
+      file `<uuid>.json` cujo conteúdo tenha `"runId":"../../foo"` faz o artefato ser escrito
+      em `reviews/../../foo.json` (path traversal na ESCRITA). loadReviewArtifact tem o mesmo
+      gap na leitura. Para o modelo single-user é baixo impacto (o atacante já é o usuário com
+      acesso a runs/), mas é uma quebra de defense-in-depth: o input validado (URL id) é
+      descartado e o conteúdo NÃO-confiável do arquivo dirige o path de escrita.
+    evidence: |
+      src/core/reviewArtifact.ts:32 — runId sem constraint de formato:
+      ```ts
+      runId: z.string().min(1),
+      ```
+      src/core/reviewArtifact.ts:65 — path derivado do runId não-path-safe:
+      ```ts
+      const path = join(dir, `${valid.runId}.json`);
+      ```
+      src/web/server.ts:159-161 — artefato montado de `env` (conteúdo do arquivo), runId = env.runId:
+      ```ts
+      reviewArtifact = ReviewArtifactSchema.parse(buildReviewArtifact(env, verdict));
+      ```
+      src/core/reviewArtifact.ts:46-55 — buildReviewArtifact: `runId: env.runId` (do arquivo carregado).
+    recommended_action: >-
+      Endurecer runId no boundary do core: trocar `z.string().min(1)` por um schema que rejeite
+      separadores de path — ex. `z.string().regex(/^[0-9a-f-]{36}$/i)` em ReviewArtifactSchema.runId
+      (e idealmente em RunEnvelopeSchema.runId), OU usar `path.basename(runId)` + assert de igualdade
+      antes do join em save/loadReviewArtifact. Defense-in-depth: nunca confiar que o filename derivado
+      do conteúdo do arquivo é path-safe só porque a URL foi validada.
+
+  - id: F-sec-3
+    severity: INFO
+    file: src/core/stableStringify.ts
+    line: 7-20
+    plan_ref: "Drawbacks & Risks — stableStringify em objeto com ciclo/poluição"
+    domain_anchor: "OWASP prototype pollution; CWE-1321"
+    summary: >-
+      stableStringify É SEGURO contra prototype pollution (verificado, não é finding —
+      registrado para fechar o item do escopo de review). sortKeys reconstrói com
+      `out[key] = ...` em um objeto literal fresco; com `key === "__proto__"` a atribuição
+      por bracket NÃO cria own-property nem polui o protótipo global (verificado em runtime:
+      `hasOwnProperty('__proto__')` false, `({}).x` undefined), e JSON.stringify descarta a
+      chave. Igualmente, loadReviewArtifact/loadRun fazem JSON.parse seguido de
+      ReviewArtifactSchema.parse (zod) — `__proto__` vindo de JSON.parse é own-property
+      (não polui a chain) e zod valida/strip na fronteira. Validação de fronteira (#4) PRESENTE.
+    evidence: |
+      Runtime check:
+        const out={}; for (const k of Object.keys(JSON.parse('{"__proto__":{"x":1}}')).sort()) out[k]=...
+        hasOwnProperty('__proto__') => false ; ({}).x => undefined ; JSON.stringify(out) => "{}"
+      src/core/reviewArtifact.ts:82 — boundary validation no load:
+        return ReviewArtifactSchema.parse(JSON.parse(raw));
+    recommended_action: >-
+      Nenhuma ação requerida. Manter a validação zod na fronteira do load (já presente).

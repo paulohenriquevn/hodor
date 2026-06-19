@@ -145,7 +145,9 @@ describe("web server — M2 verdict (POST)", () => {
       body: "verdict=maybe",
     });
     expect(res.status).toBe(400);
+    // EC-1 (F-tests-3): build+valida em memória ANTES de gravar → sem órfão de verdict NEM de artefato.
     expect(await loadVerdict(UUID1, vdir!)).toBeNull();
+    expect(await loadReviewArtifact(UUID1, rdir!)).toBeNull();
   });
 
   it("post_verdict_missing_field_is_400", async () => {

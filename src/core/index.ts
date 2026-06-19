@@ -43,7 +43,14 @@ export {
 
 // M3 — persistência versionável
 export { stableStringify } from "./stableStringify.js";
-export { normalizeRun, VOLATILE_HEADERS, type NormalizedRun, type NormalizedStep } from "./normalizeRun.js";
+export {
+  normalizeRun,
+  VOLATILE_HEADERS,
+  VOLATILE_HEADER_PREFIXES,
+  SENSITIVE_REQUEST_HEADERS,
+  type NormalizedRun,
+  type NormalizedStep,
+} from "./normalizeRun.js";
 export {
   ReviewArtifactSchema,
   buildReviewArtifact,

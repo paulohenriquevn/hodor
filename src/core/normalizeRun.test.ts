@@ -49,6 +49,39 @@ describe("normalizeRun", () => {
     expect(e.steps[0]!.response.headers["date"]).toBe("Mon, 01 Jan");
   });
 
+  it("normalize_run_redacts_sensitive_request_headers", () => {
+    // F-sec-1: o artefato é COMMITÁVEL — credenciais na request NÃO podem ir verbatim pro git.
+    const e = env([
+      step({}, {
+        request: {
+          method: "GET",
+          url: "http://api.test/x",
+          headers: { Authorization: "Bearer secret-jwt", Cookie: "sid=abc", "X-Api-Key": "k", "x-trace": "t" },
+        },
+      }),
+    ]);
+    const h = normalizeRun(e).steps[0]!.request.headers;
+    expect(h["Authorization"]).toBe("<redacted>");
+    expect(h["Cookie"]).toBe("<redacted>");
+    expect(h["X-Api-Key"]).toBe("<redacted>"); // case-insensitive match
+    expect(h["x-trace"]).toBe("t"); // não-sensível preservado
+    // input não mutado
+    expect(e.steps[0]!.request.headers["Authorization"]).toBe("Bearer secret-jwt");
+  });
+
+  it("normalize_run_strips_volatile_header_prefixes", () => {
+    // F-dom-2: voláteis de cloud/CDN/tracing por prefixo (x-amz-*, cf-*) + tracing exatos.
+    const n = normalizeRun(env([
+      step({ headers: { "content-type": "application/json", "x-amz-request-id": "r", "cf-foo": "1", "x-amzn-trace-id": "tr", traceparent: "p" } }),
+    ]));
+    const h = n.steps[0]!.response.headers;
+    expect(h["x-amz-request-id"]).toBeUndefined();
+    expect(h["cf-foo"]).toBeUndefined();
+    expect(h["x-amzn-trace-id"]).toBeUndefined();
+    expect(h["traceparent"]).toBeUndefined();
+    expect(h["content-type"]).toBe("application/json");
+  });
+
   it("normalize_run_preserves_asserts_and_captures", () => {
     const e = env([
       step({}, {

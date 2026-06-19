@@ -24,9 +24,11 @@ npm-debug.log*
 
 # Run artifacts produced by run_request (run BRUTO, efêmero — não versionado)
 runs/
+# verdicts/ é o store AO-VIVO da web app (M2), efêmero como runs/ — NÃO versionado.
+# O canônico versionável da decisão humana é reviews/ (M3), que EMBUTE o verdict.
+verdicts/
 # NOTA (M3): `reviews/` (artefato de review normalizado + verdict) é COMMITÁVEL
 # por design (DoD M3 — versionável no git). NÃO adicionar `reviews/` aqui.
-# `verdicts/` é o store ao-vivo da web app (M2); o canônico versionado é `reviews/`.
 
 # Ralph-loop local state (per-machine)
 ralph-loop.local.md

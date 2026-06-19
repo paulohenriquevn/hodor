@@ -1,0 +1,231 @@
+agent: review-m3-versionable-persistence-domain-data-pipeline
+review_target: main..HEAD for plan m3-versionable-persistence
+domain: data-pipeline (determinism / normalization / serialization — M3 core, risk #1)
+domain_specific_patterns_checked:
+  - "stableStringify: recursive key-ordering at ALL nesting levels (nested objects + objects inside arrays)"
+  - "stableStringify: array order preservation (steps are significant/ordered)"
+  - "stableStringify: byte-determinism (key insertion order, Unicode/numeric keys, trailing newline)"
+  - "normalizeRun: VOLATILE_HEADERS coverage vs common volatile headers (keploy noise parity)"
+  - "normalizeRun: case-insensitive header strip"
+  - "normalizeRun: response-body noise (volatile timestamps INSIDE the JSON body)"
+  - "normalizeRun: request-side volatility (request headers / request body not normalized)"
+  - "normalizeRun: input non-mutation invariant"
+  - "reviewArtifact: schema coherence + artifact self-sufficiency for PR review"
+  - "reviewArtifact: artifactVersion:1 boundary validation"
+
+# ---------------------------------------------------------------------------
+# VERDICT SUMMARY: no BLOCKER. 1 HIGH (residual diff noise — undermines DoD #1).
+# The determinism core (stableStringify) is genuinely deterministic. The
+# normalization core has a real, documented-but-under-scoped gap: body noise.
+# The HIGH below is the one finding that materially weakens the M3 promise
+# ("diff estável") for a very common real-world API shape.
+# ---------------------------------------------------------------------------
+
+findings:
+  - id: F-dom-1
+    severity: HIGH
+    file: src/core/normalizeRun.ts
+    line: 56
+    plan_ref: "ADR D2 (normalizeRun strip de voláteis) + Drawbacks & Risks row 1 (ruído residual); ROADMAP §M3 risco #1 (diffs ruidosos)"
+    domain_anchor: "keploy noise model — global noise applies to volatile values at any JSON depth (blueprint Coverage Corner 1 / Corner 4 §T1: buildNoiseIndex global+path, references/keploy/pkg/matcher/utils.go:82)"
+    summary: >
+      Response BODY noise is NOT normalized — `response.body` is copied verbatim as an
+      opaque string. The DoD #1 promise ("dois runs do mesmo cenário → diff estável") is
+      FALSE for the most common real-world API shape: a JSON body that embeds a volatile
+      field (server timestamp, request-id echo, generated UUID, `now()`, expiry, signed
+      token). keploy — the cited reference — treats body fields as its PRIMARY noise target
+      (the blueprint's own Corner 1 test asserts `body.ts` must NOT be reported). M3 strips
+      header/timing noise but leaves body noise fully intact, so two identical scenario runs
+      against `{"createdAt":"2026-06-19T10:00:01Z","data":...}` produce DIFFERENT bytes and a
+      noisy PR diff — exactly risk #1.
+    evidence: |
+      normalizeRun.ts:48-58 — body passes through untouched:
+      ```ts
+      response: {
+        status: step.response.status,
+        statusText: step.response.statusText,
+        headers: normalizeHeaders(step.response.headers),
+        body: step.response.body,            // <-- opaque string, volatile JSON fields survive
+      },
+      ```
+      Concrete repro: response body `{"id":1,"serverTime":"2026-06-19T10:00:01.123Z"}` on
+      run A vs `...10:00:42.999Z` on run B → normalized steps differ → stableStringify bytes
+      differ → `git diff` is noisy. The header `date` IS stripped (line 55) but the same
+      timestamp inside the body is not. The blueprint explicitly studied keploy body-noise
+      (Corner 1, body.ts) yet the M3 normalization only mirrors keploy's *global header*
+      noise, not body-field noise.
+    recommended_action: >
+      Two acceptable resolutions (pick one, do not leave silent): (A) RECOMMENDED for honesty
+      — explicitly document in the plan's Drawbacks table AND in the reviewArtifact/normalizeRun
+      doc-comment that BODY noise is OUT OF SCOPE for M3 and deferred to M5 (path-based noise =
+      keploy `body.x.y`). Today the deferral is implied ("comparação run-vs-run é M5") but body
+      *normalization* is conflated with run-vs-run *comparison* — they are different: M3 claims
+      a stable single-artifact diff, which body noise breaks independently of M5 comparison.
+      (B) If the team wants the DoD #1 promise to actually hold for JSON bodies now, add an
+      OPTIONAL path-based body-noise list to `normalizeRun` (KISS: a `Set<string>` of jsonpaths
+      blanked in the parsed body, no new dep — `jsonpath-plus` is already declared). Given YAGNI
+      and the M3/M5 split, (A) is the parsimonious call — but the gap MUST be made explicit so a
+      reviewer reading a noisy `reviews/*.json` diff knows it is by-design, not a regression.
+
+  - id: F-dom-2
+    severity: MEDIUM
+    file: src/core/normalizeRun.ts
+    line: 9
+    plan_ref: "ADR D2 — lista de voláteis explícita/versionada; Drawbacks row 1 (lista incompleta deixa ruído residual)"
+    domain_anchor: "Common volatile HTTP response headers (CDN / tracing / proxy fleets)"
+    summary: >
+      VOLATILE_HEADERS misses several extremely common volatile response headers that will
+      leak into the committed diff. Notably absent: `vary` (often stable but CDNs vary it),
+      `x-amzn-trace-id`, `x-amz-request-id`, `x-amz-id-2` (every AWS/API-Gateway response),
+      `x-cache` / `x-cache-hits` / `via` (CDN cache state — flips run-to-run), `x-request-id`
+      is present but the equally-common `request-id` / `x-correlation-id` / `traceparent` /
+      `x-trace-id` are not, and the entire `cf-*` family beyond `cf-ray`/`cf-cache-status`
+      (`cf-request-id`). `keep-alive` and `connection` timing-ish headers also vary. The plan's
+      own Drawbacks row 1 acknowledges an incomplete list "degrada mas não quebra" — accepted —
+      but the omissions here are the headers that appear on virtually every cloud-fronted API,
+      so the residual-noise risk is higher than "low-probability tail".
+    evidence: |
+      normalizeRun.ts:9-21 current set:
+      ```
+      date, age, expires, last-modified, etag, x-request-id, set-cookie,
+      cf-ray, cf-cache-status, server-timing, report-to
+      ```
+      Missing high-frequency volatiles: x-amzn-trace-id, x-amz-request-id, x-amz-id-2,
+      x-cache, via, request-id, x-correlation-id, traceparent, tracestate, x-trace-id,
+      cf-request-id. A run against any AWS API Gateway / CloudFront / generic CDN endpoint
+      will diff on these every time.
+    recommended_action: >
+      Extend VOLATILE_HEADERS with the cloud/tracing cluster above. Because the strip is a
+      Set lookup this is O(1) per header — zero perf cost, pure coverage. Keep it an explicit
+      versioned constant (ADR D2 intent). Optionally support a prefix rule for the `x-amz-*`
+      and `cf-*` families (substring/prefix match like keploy's `noiseIndex.match` by
+      substring) instead of enumerating every member — that closes the family-gap permanently
+      without an ever-growing list. If the team prefers to defer, add the deferral explicitly
+      to the Drawbacks table rather than leaving the list silently short.
+
+  - id: F-dom-3
+    severity: MEDIUM
+    file: src/core/normalizeRun.ts
+    line: 51
+    plan_ref: "ADR D2 — normalizeRun produz run diff-estável; Coverage Matrix #4 (risco #1)"
+    domain_anchor: "Determinism: any volatile field on the REQUEST side leaks into the artifact"
+    summary: >
+      Request-side volatility is not normalized at all. `normalizeStep` copies
+      `step.request` (method/url/headers/body) verbatim. If the scenario interpolates a
+      volatile value into a request header or body — e.g. `Authorization: Bearer {{token}}`,
+      `Date`, `X-Request-Id`, an idempotency key, or a `nonce` — that value is captured in
+      `runs/` and flows unchanged into the committed `reviews/{id}.json`. Two identical
+      scenario runs then diff on the request side even though the response is stable. The
+      plan/blueprint only ever discuss RESPONSE volatility (D2 lists "headers de resposta
+      voláteis"), so request-side noise is an unconsidered gap, and — unlike body noise —
+      request `Authorization`/token leakage is also a mild secrets-in-git concern for a
+      committable artifact.
+    evidence: |
+      normalizeRun.ts:50-51 — request copied wholesale:
+      ```ts
+      const normalized: NormalizedStep = {
+        request: { ...step.request, headers: { ...step.request.headers } },
+        ...
+      ```
+      No filtering of request headers/body. A scenario sending `X-Request-Id: <uuid>` or
+      `Authorization: Bearer <short-lived-jwt>` writes that volatile/secret value straight
+      into the version-controlled artifact.
+    recommended_action: >
+      Decide explicitly (this is a plan-level Unresolved Question that was never asked):
+      either (a) document that request volatility is the scenario author's responsibility and
+      out of M3 scope (acceptable for the single-user V1, but write it down), or (b) apply the
+      same VOLATILE_HEADERS strip to `request.headers` too (cheap, symmetric). At minimum flag
+      that an `Authorization`/token request header will be committed to git verbatim — for a
+      "commitável" artifact that is worth one explicit sentence in the Drawbacks table so it is
+      a conscious accepted risk, not an accident. (Hand off the secrets-in-git angle to the
+      security reviewer for severity confirmation.)
+
+  - id: F-dom-4
+    severity: LOW
+    file: src/core/normalizeRun.ts
+    line: 64
+    plan_ref: "ADR D2 — createdAt/runId como metadata fora do corpo comparável (blueprint D2: 'movidos para metadata fora do corpo diff-comparável')"
+    domain_anchor: "Determinism: artifact identity fields vs comparable body"
+    summary: >
+      `normalizeRun` correctly keeps only `scenarioName` + `steps` (createdAt/runId excluded
+      from the normalized body — matches D2). HOWEVER `buildReviewArtifact` then re-attaches
+      `runId` and `createdAt` (the latter is VOLATILE — it differs between two identical
+      scenario runs) at the artifact top level (reviewArtifact.ts:51-52). So the artifact as a
+      whole is NOT byte-identical across two runs of the same scenario — the `createdAt` line
+      always diffs. The E2E (`e2e_v1_loop_writes_committable_review_artifact`) asserts only
+      `steps` deep-equal (plan T3.1 Deep Dives), so it passes, but the committed FILE still
+      has a moving `createdAt`. This is consistent with the plan (createdAt is artifact
+      metadata, intentionally present), so it is by-design — flagged only because the Goal
+      phrase "byte-determinístico" is literally false at the file level; it is true only at
+      the steps level.
+    evidence: |
+      normalizeRun.ts:64-69 drops createdAt/runId from the comparable body (good).
+      reviewArtifact.ts:48-55 re-adds them:
+      ```ts
+      return {
+        artifactVersion: 1,
+        ...(scenarioName ...),
+        runId: env.runId,
+        createdAt: env.createdAt,   // <-- volatile across identical runs; always diffs
+        verdict,
+        steps: normalized.steps,
+      };
+      ```
+    recommended_action: >
+      No code change required — this is intended (the artifact is keyed/named by runId and
+      records when the run happened). Just align the wording: the Goal/DoD should say the
+      *normalized steps* are byte-deterministic / diff-stable, not the whole file. One-line
+      doc correction prevents a future reviewer filing a false "non-deterministic artifact"
+      bug. (steps-level stability is what actually matters for review diffs.)
+
+  - id: F-dom-5
+    severity: INFO
+    file: src/core/stableStringify.ts
+    line: 14
+    plan_ref: "ADR D3 — stableStringify chaves ordenadas recursivamente (nativo, sem dep)"
+    domain_anchor: "Determinism audit — the heart of M3 risk #1"
+    summary: >
+      stableStringify is GENUINELY deterministic — confirmed, no defect. `sortKeys` recurses
+      into objects inside arrays (line 9 maps each element through sortKeys) AND into nested
+      objects (line 16), so keys are ordered at ALL levels. Arrays keep insertion order
+      (correct — steps are significant). `Object.keys().sort()` is lexicographic UTF-16
+      code-unit order — stable and platform-independent; Unicode/numeric string keys sort
+      deterministically (numeric-looking keys are still strings here, sorted lexically — fine
+      since these schemas have no integer-keyed maps). Trailing newline + 2-space indent
+      present. No cyclic-ref risk (zod-validated DAGs). No NaN/Infinity/undefined in the
+      schemas to trip JSON.stringify. This rung of the ladder is solid.
+    evidence: |
+      stableStringify.ts:7-20 — sortKeys handles array (map+recurse), object (sort keys +
+      recurse), primitive (passthrough). stableStringify.ts:23 — `JSON.stringify(sortKeys(v),
+      null, 2) + "\n"`. Two objects differing only in key insertion order serialize identically.
+    recommended_action: >
+      None. This is the one part of the M3 core that fully delivers its determinism promise.
+      (Caveat for the record: if a future schema ever stores a JS Map, Set, Date, or bigint,
+      JSON.stringify behavior diverges — but none are present in the current zod schemas.)
+
+  - id: F-dom-6
+    severity: INFO
+    file: src/core/reviewArtifact.ts
+    line: 29
+    plan_ref: "ADR D1/D4 — ReviewArtifactSchema, artifactVersion:1, validação na fronteira"
+    domain_anchor: "Artifact self-sufficiency for PR review"
+    summary: >
+      The schema is coherent and the artifact is largely self-sufficient for PR review:
+      it embeds scenarioName + normalized steps (each step carries its own request, so the
+      reviewer sees what was sent) + the human verdict (approve/reject + note + decidedAt) +
+      artifactVersion for forward-compat. Boundary validation is correct (parse on both save
+      and load; ENOENT→null; wrong artifactVersion→throws via z.literal(1)). `steps.min(1)`
+      prevents an empty artifact. One honest gap for a reviewer: the artifact omits the assert
+      *definitions/expected* unless the run carried `asserts` (optional), and it intentionally
+      does not embed the full source scenario (Q1 resolution — scenarioName only). For M3 / V1
+      single-user this is acceptable; just noting that a reviewer reading only the artifact
+      cannot always reconstruct the intended assertions if the run predates asserts.
+    evidence: |
+      reviewArtifact.ts:17-36 — NormalizedStepSchema + ReviewArtifactSchema; asserts/captures
+      optional (line 25-26). reviewArtifact.ts:63 (parse on save), 82 (parse on load),
+      79 (ENOENT→null). artifactVersion z.literal(1) line 30.
+    recommended_action: >
+      None for M3. The artifact is review-sufficient for the V1 anchor. If future milestones
+      want a fully self-contained review (no need to cross-reference the scenario file),
+      consider embedding scenarioName + a content hash of the source scenario so a reviewer
+      can detect scenario drift — but that is M5+ and YAGNI now.

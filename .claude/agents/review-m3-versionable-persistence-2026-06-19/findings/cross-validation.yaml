@@ -1,0 +1,194 @@
+agent: review-m3-versionable-persistence-cross-validation
+review_target: origin/main..develop for plan m3-versionable-persistence (FECHA O V1)
+plan: .claude/knowledge-base/plans/m3-versionable-persistence-plan.md
+reviewed_at: 2026-06-19
+
+# ----------------------------------------------------------------------------
+# Task -> commit -> status
+# ----------------------------------------------------------------------------
+task_commit_map:
+  - task: T1.1 stableStringify (JSON determinístico)
+    commit: 1582c47
+    files: src/core/stableStringify.ts (+24), stableStringify.test.ts (+22)
+    acceptance: 4 RED tests verdes; byte-idêntico p/ ordem de chaves; arrays preservados; newline final; coverage 100%
+    status: FULLY_IMPLEMENTED
+  - task: T1.2 normalizeRun (strip de voláteis)
+    commit: 1582c47
+    files: src/core/normalizeRun.ts (+69), normalizeRun.test.ts (+63)
+    acceptance: 5 RED tests verdes; VOLATILE_HEADERS explícito (11 headers); não muta input; asserts/captures preservados; coverage 100%
+    status: FULLY_IMPLEMENTED
+  - task: T1.3 reviewArtifact (schema + build + save/load)
+    commit: 1582c47
+    files: src/core/reviewArtifact.ts (+83), reviewArtifact.test.ts (+75), index.ts (+12 export aditivo)
+    acceptance: 5 RED tests verdes; artifactVersion z.literal(1); embute verdict + steps normalizados; stableStringify; load null em ENOENT; rejeita versão errada; coverage 93.33%
+    status: FULLY_IMPLEMENTED
+  - task: T2.1 POST verdict escreve o artefato versionável
+    commit: f9a8f4c
+    files: src/web/server.ts (+32/-9), server.test.ts (+52)
+    acceptance: 2 RED tests verdes; EC-1 (build+valida EM MEMÓRIA antes de gravar) corretamente implementado; ordem build->saveVerdict->saveReviewArtifact; 303 preservado; verdict inválido -> 400 sem órfão
+    status: FULLY_IMPLEMENTED
+  - task: T3.1 E2E V1 + commitável + CHANGELOG + gitignore
+    commit: d0aaf00
+    files: src/v1-e2e.test.ts (+97), .gitignore (+5/-1), CHANGELOG.md (+1), reviews/00000000-...-aa.json (+41)
+    acceptance: e2e_v1_loop_writes_committable_review_artifact verde; reviews/ não-gitignored; runs/ ignorado; CHANGELOG [Unreleased] Added
+    status: FULLY_IMPLEMENTED_WITH_DEFECT  # ver F-xval-1 (artefato committado é leak de teste, não fixture deliberada)
+
+plan_tasks_summary:
+  total_tasks: 5
+  fully_implemented: 5
+  partial: 0
+  missing: 0
+  diverged: 0
+
+acceptance_criteria_summary:
+  total: 17
+  satisfied: 17
+  unverified: 0
+  false_claims: 0
+
+# ----------------------------------------------------------------------------
+# DoD do ROADMAP §M3 (FECHA O V1) -> evidência
+# ----------------------------------------------------------------------------
+roadmap_dod_evidence:
+  - dod: "DoD#1 — cenários/resultados = arquivos texto estáveis/diff-amigáveis, versionáveis"
+    evidence: |
+      stableStringify (chaves ordenadas recursivamente, 2-espaços, newline) + normalizeRun
+      (remove timings + 11 headers voláteis). Verificado no artefato committado
+      reviews/00000000-...-aa.json: chaves em ordem alfabética (artifactVersion, createdAt,
+      runId, scenarioName, steps, verdict), SEM timings, SEM date/etag. E2E assert
+      a.steps deep-equal b.steps p/ 2 runs com voláteis diferentes.
+    status: SATISFIED
+  - dod: "DoD#2 — verdict gravado no artefato versionado, ligando cenário+execução"
+    evidence: |
+      ReviewArtifactSchema embute {verdict, runId, scenarioName, steps}. buildReviewArtifact
+      junta env(run)+verdict. E2E: loadReviewArtifact(RUN_A/B).verdict.verdict === "approved".
+      Artefato committado mostra verdict.verdict=approved + runId + scenarioName.
+    status: SATISFIED
+  - dod: "DoD#3 — critério V1 demonstrado: loop completo em arquivos commitáveis"
+    evidence: |
+      E2E e2e_v1_loop_writes_committable_review_artifact (GENUÍNO, não stub): persistRun
+      real -> buildWebServer real -> POST /verdict via fetch (303) -> loadReviewArtifact ->
+      assert normalização estável + verdict + reviews/ não-gitignored (lê .gitignore real).
+      git check-ignore reviews/ retorna vazio (commitável); git ls-files reviews/ lista
+      arquivo rastreado. Loop agente->execução->revisão->verdict 100% em arquivos.
+    status: SATISFIED
+
+goal_metric:
+  goal: e2e_v1_loop_writes_committable_review_artifact verde
+  result: PASS  # 108/108 testes verdes; este teste inclusive
+
+adr_compliance:
+  total_adrs: 5
+  respected: 5
+  diverged_without_new_adr: 0
+  detail:
+    - adr: D1 (reviews/{id}.json separado do run bruto)
+      respected: true
+      evidence: reviewArtifact.ts grava em reviews/; runs/ permanece gitignored
+    - adr: D2 (normalizeRun strip de voláteis, lista explícita)
+      respected: true
+      evidence: VOLATILE_HEADERS Set explícito; normalizeStep remove timings + headers
+    - adr: D3 (stableStringify nativo, sem dep)
+      respected: true
+      evidence: JSON.stringify + sortKeys recursivo; ZERO dep nova (npm audit 0; package.json inalterado)
+    - adr: D4 (artifactVersion: z.literal(1))
+      respected: true
+      evidence: ReviewArtifactSchema.artifactVersion = z.literal(1); teste rejects_wrong_version
+    - adr: D5 (artefato escrito ao registrar verdict; web = caller)
+      respected: true
+      evidence: postVerdict chama buildReviewArtifact + saveReviewArtifact (wiring pillar a real)
+
+coverage_matrix_check:
+  total_gaps: 6
+  resolved: 6
+  detail:
+    - gap: 1 (arquivos texto estáveis/diff-amigáveis) -> T1.1/T1.2/T1.3/T3.1 -> RESOLVED
+    - gap: 2 (verdict no artefato versionado) -> T1.3/T2.1 -> RESOLVED
+    - gap: 3 (loop V1 em arquivos commitáveis) -> T3.1 -> RESOLVED
+    - gap: 4 (risco #1 diffs ruidosos) -> T1.2 normalizeRun -> RESOLVED
+    - gap: 5 (risco #2 acoplar formato) -> T1.3 artifactVersion:1 -> RESOLVED
+    - gap: 6 (reuso core M0/M1/M2 sem refactor) -> T1.2/T1.3/T2.1 -> RESOLVED (aditivo; RunEnvelope/Verdict/loadRun reusados)
+
+backward_compat:
+  m0_m1_m2_tests_green: true  # 108/108; envelope, scenario, verdict, render, M2 review-e2e todos verdes
+  post_verdict_303_preserved: true
+  schemas_unchanged: true  # RunEnvelopeSchema/VerdictSchema sem mudança de assinatura
+  note: regressão de SIDE-EFFECT (não de comportamento de API) — ver F-xval-1
+
+validation_chain_rerun:
+  npm_test: "PASS — 108/108 (21 files)"
+  tsc_typecheck: "PASS — 0 erros"
+  npm_audit: "PASS — 0 vulnerabilities"
+  coverage_new_core: "stableStringify 100% | normalizeRun 100% | reviewArtifact 93.33% lines (>=90% gate OK)"
+  git_check_ignore_reviews: "PASS — vazio (commitável)"
+  git_check_ignore_runs: "PASS — runs/ ignorado"
+  clean_tree_after_test: "FAIL — npm test mutou reviews/00000000-...-aa.json (decidedAt) — ver F-xval-1"
+
+plan_drift:
+  plan_edited_after_implement: false
+  details: |
+    Plan congelado em c4fe30e (2026-06-19 04:08); primeiro commit de implementação
+    1582c47 (04:27). Plano FROZEN durante /implement. Sem drift.
+
+v1_closure_assessment: |
+  CRITÉRIO V1 (M0-M3 [x]): GENUINAMENTE ATENDIDO. O loop E2E inteiro
+  (agente->execução->revisão->verdict) está em arquivos commitáveis REAIS — não stub:
+  - persistRun grava run real; POST /verdict via HTTP real; saveReviewArtifact grava
+    reviews/{id}.json determinístico/normalizado.
+  - O artefato versionável existe rastreado no git (git ls-files reviews/) e passa
+    git check-ignore vazio (commitável).
+  - normalização provada estável (2 runs voláteis-diferentes -> steps deep-equal).
+  RESSALVA (não bloqueia o critério, mas HIGH de higiene): o ÚNICO artefato committado
+  no repo (reviews/...-aa.json) foi gerado por LEAK do teste M2 review-e2e.test.ts
+  (que não isola reviewsDir e cai no default "reviews/"), e foi git add-ado no commit
+  T3.1 — não é uma fixture deliberada. O teste V1 (correto) usa tmpdir. Isso re-suja a
+  árvore a cada `npm test`, violando a pré-condição RELEASE "no uncommitted changes".
+
+findings:
+  - id: F-xval-1
+    severity: HIGH
+    file: src/review-e2e.test.ts
+    line: 27
+    plan_ref: "T2.1 Deep Dives + Global DoD 'Compatibilidade M0/M1/M2'; ROADMAP §M3 DoD#1 (diff-amigável)"
+    summary: >-
+      Teste M2 review-e2e.test.ts chama buildWebServer(runsDir, verdictsDir) SEM reviewsDir;
+      após a mudança T2.1, o POST /verdict passa a escrever no diretório reviews/ REAL do
+      repo (default defaultReviewsDir() = "reviews"), com runId 00000000-...-aa. O resultado
+      foi git add-ado no commit T3.1 (d0aaf00) — o único artefato versionado em reviews/ é,
+      na verdade, lixo de teste, não uma fixture. Cada `npm test` reescreve decidedAt e suja
+      a árvore (git status mostra ' M reviews/00000000-...-aa.json'), violando a pré-condição
+      de RELEASE 'no uncommitted changes' e poluindo justamente o diretório que o M3 existe
+      para manter diff-limpo.
+    evidence: |
+      src/review-e2e.test.ts:27  server = buildWebServer(runsDir!, verdictsDir!);  // sem reviewsDir
+      src/review-e2e.test.ts:36  const RUN_ID = "00000000-0000-0000-0000-0000000000aa";
+      src/web/server.ts:55       reviewsDir: string = defaultReviewsDir(),  // = "reviews"
+      git log --follow reviews/00000000-...-aa.json  -> só d0aaf00 (commit T3.1 e2e), não um fixture deliberado
+      git diff (pós npm test): decidedAt 2026-06-19T07:39:46 -> 07:42:39  (mutação a cada run)
+      O teste V1 correto (v1-e2e.test.ts) usa mkdtemp p/ reviewsDir e runIds a1/b2 — prova que o leak é só do teste M2.
+    recommended_action: >-
+      (a) Em src/review-e2e.test.ts isolar reviewsDir: criar mkdtemp e passar como 3º arg em
+      buildWebServer(runsDir!, verdictsDir!, reviewsDir!), com cleanup no afterEach (espelhar
+      v1-e2e.test.ts). (b) git rm --cached reviews/00000000-...-aa.json (não é fixture; é leak)
+      e remover o arquivo, OU — se a intenção for ter uma fixture committada demonstrando o
+      formato — renomeá-la para um id estável e gerá-la deterministicamente com decidedAt fixo
+      (sem new Date()) para não re-sujar. Re-rodar `npm test` e confirmar `git status` limpo.
+
+  - id: F-xval-2
+    severity: LOW
+    file: CHANGELOG.md
+    line: 5
+    plan_ref: "Unbreakable Rule 6 (toda entry com referência #ticket/#PR)"
+    summary: >-
+      A entry M3 em [Unreleased] § Added não carrega referência (#issue/#PR) exigida pela
+      Unbreakable Rule 6. Consistente com o histórico do repo (M2 idem), portanto LOW —
+      mas o gate FAANG deve registrar.
+    evidence: |
+      CHANGELOG.md:5  "- **M3 — Persistência versionável...** ZERO dependência nova."  (sem "(#...)")
+    recommended_action: >-
+      Adicionar referência ao PR/milestone, ex. "(M3)" ou "(#<pr>)". Decisão de processo —
+      pode ser dispensado por padrão pré-existente do repo, mas anote para uniformizar.
+
+blockers: []
+highs:
+  - F-xval-1

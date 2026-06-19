@@ -72,4 +72,29 @@ describe("reviewArtifact", () => {
     const dir = await tmp();
     expect(await loadReviewArtifact("nope", dir)).toBeNull();
   });
+
+  it("load_review_artifact_throws_on_corrupt_file", async () => {
+    // F-tests-1: arquivo presente mas JSON inválido → fail-loud (não null, não silencioso).
+    const dir = await tmp();
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(dir, "bad.json"), "{ not valid json", "utf8");
+    await expect(loadReviewArtifact("bad", dir)).rejects.toThrow();
+  });
+
+  it("build_review_artifact_omits_scenario_name_for_unnamed_run", () => {
+    // F-tests-2: run M0 sem `name` → artefato válido, sem scenarioName.
+    const unnamed: RunEnvelope = { schemaVersion: 1, runId: "r2", createdAt: "2026-06-19T00:00:00.000Z", steps: [step] };
+    const a = buildReviewArtifact(unnamed, verdict);
+    expect("scenarioName" in a).toBe(false);
+    expect(ReviewArtifactSchema.safeParse(a).success).toBe(true);
+  });
+
+  it("save_review_artifact_rejects_path_traversal_run_id", async () => {
+    // F-sec-2: runId vindo do conteúdo do run não pode escrever fora do dir.
+    const dir = await tmp();
+    const evil: RunEnvelope = { schemaVersion: 1, runId: "../../etc/x", createdAt: "2026-06-19T00:00:00.000Z", name: "c", steps: [step] };
+    await expect(
+      saveReviewArtifact(buildReviewArtifact(evil, { ...verdict, runId: "../../etc/x" }), dir),
+    ).rejects.toThrow(/unsafe runId/);
+  });
 });

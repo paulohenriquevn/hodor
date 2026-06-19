@@ -1,0 +1,211 @@
+agent: review-m3-versionable-persistence-tests
+review_target: develop @ 44c3b0b for plan m3-versionable-persistence
+plan: .claude/knowledge-base/plans/m3-versionable-persistence-plan.md
+date: 2026-06-19
+
+suite_status:
+  command: npx vitest run
+  test_files: 21
+  tests: 108
+  result: all green
+  duration: ~1.07s
+  backward_compat_m0_m1_m2: GREEN (todos os 21 arquivos passam; nenhum arquivo M0/M1/M2 regrediu)
+
+coverage:
+  command: npx vitest run --coverage (read-only)
+  threshold_plan: ">= 90% em stableStringify, normalizeRun, reviewArtifact"
+  per_file:
+    stableStringify.ts: { stmts: 100.0, branch: 100.0, verdict: PASS }
+    normalizeRun.ts: { stmts: 100.0, branch: 100.0, verdict: PASS }
+    reviewArtifact.ts: { stmts: 93.8, branch: 75.0, lines: 93.3, verdict: PASS_stmts_but_branch_gap }
+  note: >
+    Threshold de 90% stmts atendido nos 3 arquivos. PORÉM o gap de branch em
+    reviewArtifact.ts (75%) é exatamente o caminho de erro de loadReviewArtifact
+    (rethrow não-ENOENT + JSON.parse lança) — ver F-tests-2. Cobertura de linha
+    alta mascara ausência de teste do failure scenario.
+
+test_pyramid:
+  unit_added: 14        # stableStringify(4) + normalizeRun(5) + reviewArtifact(5)
+  integration_added: 2  # server.test.ts M3: post_verdict_writes_review_artifact + _is_normalized
+  e2e_added: 1          # v1-e2e: e2e_v1_loop_writes_committable_review_artifact
+  total: 17
+  balance: saudável (base larga de unit, 1 E2E representativo) — pirâmide correta, não invertida
+
+edge_cases_from_plan:
+  covered: 3   # EC ordem-de-volatilidade (normalize estável), array-order (stableStringify), wrong-version reject
+  missing:
+    - "Failure scenario #1: loadReviewArtifact sobre arquivo JSON CORROMPIDO no disco deve lançar (fail-loud)"
+    - "Failure scenario #3 / EC-2: run M0 SEM name -> scenarioName omitido; artefato ainda válido"
+    - "EC-1 (MUST-FIX T2.1): build/normalize falha ANTES de saveVerdict/saveReviewArtifact -> nenhum artefato órfão"
+
+e2e_proves_same_scenario_identical_steps: true
+e2e_evidence: >
+  v1-e2e.test.ts persiste 2 runs do MESMO cenário (sameScenarioStep) diferindo
+  só em date/etag/durationMs/createdAt/runId, registra verdict em cada e asserta
+  a!.steps deep-equal b!.steps (DoD #1 normalização estável) + ambos verdict approved
+  (DoD #2) + reviews/ não-gitignored e runs/ ignorado (DoD #3). Cenário->steps idênticos
+  PROVADO. Único E2E, estável, determinístico (now/newId injetados). Bom.
+
+findings:
+  - id: F-tests-1
+    severity: HIGH
+    file: src/core/reviewArtifact.test.ts
+    line: 66
+    plan_ref: 'Failure scenarios tabela linha 1 — "artefato gravado lido de volta corrompido -> ReviewArtifactSchema.parse lança (fail-loud, validação na fronteira)"'
+    summary: >
+      O failure scenario de artefato CORROMPIDO no disco não é exercido. O teste
+      review_artifact_rejects_wrong_version usa ReviewArtifactSchema.safeParse sobre
+      um OBJETO em memória — nunca grava JSON malformado em reviews/{id}.json nem chama
+      loadReviewArtifact sobre ele. O caminho real de fronteira (loadReviewArtifact ->
+      JSON.parse de bytes inválidos -> .parse lança) fica sem teste. É exatamente o
+      branch descoberto (reviewArtifact.ts branch 75%; linha 80 = rethrow não-ENOENT).
+    evidence: |
+      grep -rni "not valid json|corrupt|invalid json|toThrow" src/core/reviewArtifact.test.ts -> 0 matches
+      reviewArtifact.test.ts:66-69 testa safeParse(obj), não loadReviewArtifact(arquivo corrompido)
+      coverage: reviewArtifact.ts branch 6/8 (75%); linha 80 (throw err) uncovered
+      Contraste: server.test.ts:107 listing_skips_corrupt_run_file JÁ grava "{ not valid json" no disco — o padrão correto existe no repo e não foi replicado para reviews/.
+    recommended_action: >
+      Adicionar teste: gravar "{ not valid json" em ${dir}/r1.json e
+      `await expect(loadReviewArtifact("r1", dir)).rejects.toThrow()`. Cobre o
+      failure scenario declarado e fecha o gap de branch (fronteira fail-loud, Rule 8).
+
+  - id: F-tests-2
+    severity: HIGH
+    file: src/core/reviewArtifact.test.ts
+    line: 38
+    plan_ref: 'Failure scenarios tabela linha 3 + Q1 + buildReviewArtifact (scenarioName opcional) — "run sem name -> scenarioName omitido; artefato válido (campo opcional)"'
+    summary: >
+      Caminho do campo OPCIONAL scenarioName não testado. Todo teste de reviewArtifact
+      e o E2E sempre passam name ("cen"/"cenário-v1"). Nenhum teste exercita
+      buildReviewArtifact(env_sem_name, verdict) afirmando que scenarioName é OMITIDO
+      (não presente, não undefined-serializado) e que o artefato ainda valida no zod.
+      É um edge case explícito do plano (compat com run M0/run_request) e um branch real
+      em buildReviewArtifact (linha 50) e normalizeRun (linha 66).
+    evidence: |
+      grep -rni "scenarioName" *.test.ts | grep -iE "undefined|without|sem name|omit" -> 0 matches
+      reviewArtifact.test.ts: env sempre com name:"cen" (linha 24)
+      v1-e2e.test.ts:59,63: buildRunEnvelope(..., "cenário-v1") sempre com nome
+      normalizeRun.test.ts: env(s, name?) — o caso name ausente nunca é asserido para scenarioName
+    recommended_action: >
+      Adicionar unit: const a = buildReviewArtifact(env_sem_name, verdict);
+      expect("scenarioName" in a).toBe(false); expect(ReviewArtifactSchema.safeParse(a).success).toBe(true).
+      Cobre o failure scenario M0-compat e o branch opcional.
+
+  - id: F-tests-3
+    severity: HIGH
+    file: src/web/server.test.ts
+    line: 205
+    plan_ref: 'T2.1 Deep Dives [EC-1] MUST-FIX — "build do artefato em memória PRIMEIRO; erro de build/normalize aborta ANTES de gravar qualquer coisa (-> 500, nada órfão)"'
+    summary: >
+      A ordem build-antes-de-salvar (o MUST-FIX absorvido EC-1, razão da v1.1 do plano)
+      não tem teste de regressão. Só o happy-path do POST é exercitado
+      (post_verdict_writes_review_artifact / _is_normalized). Nenhum teste prova que,
+      quando build/normalize falha, NEM o verdict NEM o artefato são gravados (sem órfão)
+      e o cliente recebe 500. Um refactor que reordene saveVerdict antes do build não
+      seria detectado por nenhum teste — o invariante central do MUST-FIX está
+      desprotegido.
+    evidence: |
+      grep -rni "orphan|órfão|build.*fail|antes de|before.*save|abort" src/web/server.test.ts src/v1-e2e.test.ts -> 0 matches
+      server.test.ts M3 (193-234): apenas 2 casos, ambos happy-path (approved/rejected).
+      EC-1 é o motivo declarado da revisão do plano (header: "absorveu EC-1 MUST-FIX ordem build-antes-de-salvar").
+    recommended_action: >
+      Adicionar teste que injeta um run cujo build/normalize lança (ex.: passar reviewsDir
+      apontando para um caminho não-gravável, OU um step que falha o schema na fronteira)
+      e asserta status 500 + loadVerdict==null + loadReviewArtifact==null (nada órfão).
+      Protege o invariante de ordenação do MUST-FIX.
+
+  - id: F-tests-4
+    severity: MEDIUM
+    file: src/core/reviewArtifact.test.ts
+    line: 47
+    plan_ref: 'T1.3 TDD — save_review_artifact_writes_stable_bytes ("salvar o mesmo artefato 2x -> bytes idênticos")'
+    summary: >
+      O teste de determinismo de bytes é mais fraco que o invariante. Ele salva o MESMO
+      objeto duas vezes — isso só prova idempotência de escrita, não que dois artefatos
+      construídos a partir de runs com chaves em ordem de inserção diferente produzem
+      bytes idênticos. O byte-determinismo cross-build (a promessa real do stableStringify
+      no contexto do artefato) é provado indiretamente só pelo E2E (steps deep-equal, não
+      byte-equal). Asserção um pouco frágil/tautológica para o DoD "byte-determinístico".
+    evidence: |
+      reviewArtifact.test.ts:48-56 — `const a = buildReviewArtifact(...)` salvo 2x; first===second.
+      Salvar o mesmo `a` 2x é trivialmente determinístico (stableStringify puro). Não cobre
+      ordem-de-chave divergente entre dois builds.
+    recommended_action: >
+      Reforçar (ou adicionar) asserção comparando stableStringify de dois artefatos
+      semânticamente iguais mas com objetos verdict/headers montados em ordem de chave
+      diferente -> bytes idênticos. Alinha o teste ao DoD #1 byte-determinístico.
+
+  - id: F-tests-5
+    severity: LOW
+    file: src/core/normalizeRun.test.ts
+    line: 38
+    plan_ref: 'rules/testing.md §3 — "test names describe behavior; AAA / GWT"'
+    summary: >
+      Boa cobertura de comportamento da normalização (5 unit cobrem timings, headers,
+      estabilidade cross-volátil, no-mutate, asserts/captures preservados — branch 100%).
+      Observação menor: case-insensitivity de header volátil (a impl faz k.toLowerCase()
+      em normalizeHeaders) não tem teste — um header "Date"/"ETag" maiúsculo deveria ser
+      removido. Branch coberto incidentalmente, mas sem asserção dedicada documentando o
+      contrato. Não bloqueante.
+    evidence: |
+      normalizeRun.ts:43 `if (!VOLATILE_HEADERS.has(k.toLowerCase()))` — lowercase intencional.
+      normalizeRun.test.ts: todos os headers de teste já vêm lowercase ("date","etag").
+      Servidores reais retornam "Date"/"ETag" capitalizados — o contrato case-insensitive
+      fica sem teste de comportamento.
+    recommended_action: >
+      Adicionar 1 unit: header "Date"/"ETag" (capitalizado) é removido pela normalização.
+      Documenta o contrato case-insensitive como comportamento, não detalhe de impl.
+
+  - id: F-tests-6
+    severity: LOW
+    file: src/core/stableStringify.test.ts
+    line: 1
+    plan_ref: 'Drawbacks & Risks — "stableStringify em objeto com referência cíclica lança" (Low, documentado)'
+    summary: >
+      stableStringify tem 4 unit (chaves ordenadas, array preservado, aninhado, newline)
+      — cobertura 100% stmts/branch para o caminho feliz. O drawback documentado (ciclo
+      lança) é aceito como "Low / DAG garantido por zod", então não é teste obrigatório;
+      registrado apenas para rastreabilidade. Sem ação obrigatória.
+    evidence: |
+      stableStringify.test.ts: 4 testes, todos happy-path; coverage 100%/100%.
+      Plano Drawbacks aceita o risco de ciclo como Low (zod valida DAG antes).
+    recommended_action: >
+      Nenhuma ação obrigatória. Opcional: 1 teste asserindo que ciclo lança (documenta
+      o limite). Aceitável omitir por YAGNI dado o shape validado por zod.
+
+  - id: F-tests-7
+    severity: LOW
+    file: src/core/reviewArtifact.test.ts
+    line: 66
+    plan_ref: 'TDD T1.3 — review_artifact_rejects_wrong_version'
+    summary: >
+      TDD order: tests e implementação foram co-commitados em 1582c47 (feat(core)),
+      não em commits RED separados antes do GREEN. Não é possível provar via git history
+      que o teste falhou antes da impl existir. Co-commit é aceitável (o plano lista os
+      RED tests por task e a suíte é verde/determinística), mas a ordem RED->GREEN não é
+      auditável pelo histórico.
+    evidence: |
+      git log: 1582c47 "feat(core): ... stableStringify + normalizeRun + reviewArtifact (T1.1-T1.3)"
+      contém .ts E .test.ts no mesmo commit. Sem commit RED isolado precedente.
+    recommended_action: >
+      Sem ação para este PR. Para próximos ciclos, considerar commitar o RED test antes
+      do GREEN para tornar a disciplina TDD auditável (rules/cycle-implement.md).
+
+skipped_or_only_tests: none   # 0 .skip / .only / xit / xtest / it.only — BLOCKER check PASS
+flaky_signals: none           # testes determinísticos (now/newId/IDs injetados; tmpdir isolado por teste)
+
+summary: >
+  Suíte M3 verde (108/108), pirâmide saudável (14 unit / 2 integração / 1 E2E), zero
+  .skip/.only, backward-compat M0/M1/M2 intacta, coverage de stmts >=90% nos 3 arquivos
+  do core (stableStringify 100%, normalizeRun 100%, reviewArtifact 93.8%). O E2E PROVA o
+  invariante central (mesmo cenário -> steps idênticos apesar dos voláteis) e os 3 DoDs.
+  PORÉM três cenários EXPLICITAMENTE declarados no plano (Failure scenarios + EC-1 MUST-FIX)
+  NÃO têm teste: (1) loadReviewArtifact sobre JSON corrompido no disco; (2) run sem name ->
+  scenarioName omitido; (3) ordem build-antes-de-salvar (o MUST-FIX que motivou a v1.1).
+  São happy-path-heavy nos error/edge paths — exatamente onde os bugs moram. O gap de branch
+  75% em reviewArtifact.ts confirma o (1). Recomendo NEEDS_FIXES até F-tests-1/2/3 cobertos.
+
+blocker_count: 0
+high_count: 3   # F-tests-1, F-tests-2, F-tests-3
+medium_count: 1
+low_count: 3

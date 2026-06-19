@@ -55,12 +55,26 @@ export function buildReviewArtifact(env: RunEnvelope, verdict: Verdict): ReviewA
   };
 }
 
+/**
+ * `runId` usado como nome de arquivo NÃO pode conter separadores de path nem `..`
+ * (defense-in-depth — F-sec-2: o runId vem do conteúdo do run, não só da URL já
+ * validada). Aceita o formato dos IDs do projeto (hex + hífen) e nada mais.
+ */
+const SAFE_RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
+
+function assertSafeRunId(runId: string): void {
+  if (!SAFE_RUN_ID_RE.test(runId) || runId === "." || runId === "..") {
+    throw new Error(`unsafe runId for artifact path: ${JSON.stringify(runId)}`);
+  }
+}
+
 /** Valida (fronteira) e grava o artefato determinístico em `${dir}/${runId}.json`. */
 export async function saveReviewArtifact(
   artifact: ReviewArtifact,
   dir: string = defaultReviewsDir(),
 ): Promise<string> {
   const valid = ReviewArtifactSchema.parse(artifact);
+  assertSafeRunId(valid.runId);
   await mkdir(dir, { recursive: true });
   const path = join(dir, `${valid.runId}.json`);
   await writeFile(path, stableStringify(valid), "utf8");
