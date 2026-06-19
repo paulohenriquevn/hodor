@@ -22,8 +22,11 @@ npm-debug.log*
 # Kept locally for citation-existence checks; not versioned in this repo.
 .claude/knowledge-base/references/*/
 
-# Run artifacts produced by run_request (not versioned in M0)
+# Run artifacts produced by run_request (run BRUTO, efêmero — não versionado)
 runs/
+# NOTA (M3): `reviews/` (artefato de review normalizado + verdict) é COMMITÁVEL
+# por design (DoD M3 — versionável no git). NÃO adicionar `reviews/` aqui.
+# `verdicts/` é o store ao-vivo da web app (M2); o canônico versionado é `reviews/`.
 
 # Ralph-loop local state (per-machine)
 ralph-loop.local.md

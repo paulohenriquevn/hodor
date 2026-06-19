@@ -7,6 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ## [Unreleased]
 
 ### Added
+- **M3 — Persistência versionável + estado de revisão (fecha o V1):** ao registrar um verdict, o sistema escreve um **artefato de review versionável** em `reviews/{runId}.json` — cenário + run normalizado + verdict — serializado de forma **determinística** (`stableStringify`: chaves ordenadas, byte-estável) com os **campos voláteis removidos** (`normalizeRun`: timings + headers como `date`/`etag`/`x-request-id`), validado por zod e versionado por `artifactVersion`. `reviews/` é commitável (diff-amigável no git); `runs/` (run bruto) permanece efêmero. Fecha o critério de V1: o loop agente→execução→revisão→verdict fica registrado em arquivos commitáveis com diff estável. ZERO dependência nova.
 
 ### Changed
 

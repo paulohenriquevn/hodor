@@ -1,0 +1,41 @@
+{
+  "artifactVersion": 1,
+  "createdAt": "1970-01-01T00:00:00.000Z",
+  "runId": "00000000-0000-0000-0000-0000000000aa",
+  "scenarioName": "meu-cenário",
+  "steps": [
+    {
+      "asserts": [
+        {
+          "actual": 200,
+          "expected": 200,
+          "op": "equals",
+          "pass": true,
+          "source": "status",
+          "value": 200
+        }
+      ],
+      "request": {
+        "headers": {
+          "x-trace": "t1"
+        },
+        "method": "GET",
+        "url": "http://api.test/x"
+      },
+      "response": {
+        "body": "{\"ok\":true}",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "status": 200,
+        "statusText": "OK"
+      }
+    }
+  ],
+  "verdict": {
+    "decidedAt": "2026-06-19T07:39:46.531Z",
+    "note": "revisado ok",
+    "runId": "00000000-0000-0000-0000-0000000000aa",
+    "verdict": "approved"
+  }
+}
