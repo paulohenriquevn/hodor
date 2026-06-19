@@ -5,6 +5,7 @@ import type {
   CapturedResponse,
   AssertResult,
   Verdict,
+  RunDiff,
 } from "../core/index.js";
 
 /** Item da listagem de runs (GET /). */
@@ -213,7 +214,7 @@ export function renderRun(env: RunEnvelope, verdict: Verdict | null = null): str
   </style>
 </head>
 <body>
-  <p class="meta"><a href="/">← todos os runs</a></p>
+  <p class="meta"><a href="/">← todos os runs</a> · <a href="/runs/${escapeHtml(env.runId)}/diff">ver diff vs anterior</a></p>
   <h1>Hodor run <code>${escapeHtml(env.runId)}</code>${env.name ? ` — ${title}` : ""}</h1>
   <p class="meta">schemaVersion ${env.schemaVersion} · ${escapeHtml(env.createdAt)} · ${env.steps.length} step(s)</p>
   ${provenanceBadge(env, verdict)}
@@ -275,6 +276,70 @@ export function renderListing(items: ListingItem[]): string {
 <body>
   <h1>Hodor — execuções para revisão</h1>
   ${table}
+</body>
+</html>`;
+}
+
+/**
+ * Render do diff de regressão (M5, ADR D6): destaca status/headers/body mudados
+ * entre o run atual e o anterior do mesmo cenário, APÓS normalização (voláteis +
+ * noise já suprimidos pelo core). Sem run anterior → mensagem "primeiro run".
+ * Todo conteúdo dinâmico escapado (anti-XSS, herdado do M2).
+ */
+export function renderDiff(curr: RunEnvelope, prev: RunEnvelope | null, diff: RunDiff | null): string {
+  const title = curr.name ? escapeHtml(curr.name) : escapeHtml(curr.runId);
+  let bodyHtml: string;
+  if (!prev || !diff) {
+    bodyHtml = `<p class='muted'>Primeiro run deste cenário — não há execução anterior para comparar.</p>`;
+  } else {
+    const banner = diff.hasRegression
+      ? `<p class='diff-changed'>⚠ Mudança de comportamento detectada vs run anterior.</p>`
+      : `<p class='diff-same'>✓ Sem mudança de comportamento (após normalização de voláteis + noise).</p>`;
+    const countNote = diff.stepCountChanged
+      ? `<p class='diff-changed'>Número de steps mudou: ${prev.steps.length} → ${curr.steps.length}.</p>`
+      : "";
+    const rows = diff.steps
+      .map((s) => {
+        const headerCell =
+          s.headerDiffs.length === 0
+            ? `<span class='muted'>—</span>`
+            : s.headerDiffs
+                .map((h) => `<code>${escapeHtml(h.key)}</code>: ${escapeHtml(h.prev ?? "(ausente)")} → ${escapeHtml(h.curr ?? "(ausente)")}`)
+                .join("<br/>");
+        const cell = (changed: boolean, label: string) =>
+          changed ? `<td class='diff-changed'>${label}</td>` : `<td class='diff-same'>—</td>`;
+        return `<tr>
+          <td>${s.stepIndex + 1}</td>
+          ${cell(s.statusChanged, "status mudou")}
+          <td>${headerCell}</td>
+          ${cell(s.bodyChanged, "body mudou")}
+        </tr>`;
+      })
+      .join("");
+    bodyHtml = `${banner}${countNote}
+    <p class='meta'>atual <code>${escapeHtml(curr.runId)}</code> vs anterior <code>${escapeHtml(prev.runId)}</code></p>
+    <table class='diff'><thead><tr><th>Step</th><th>Status</th><th>Headers (não-voláteis)</th><th>Body</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Hodor — diff ${escapeHtml(curr.runId)}</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem; color: #1a1a1a; }
+    h1 { font-size: 1.1rem; } a { color: #0b66c3; } code { word-break: break-all; }
+    .meta { color: #666; font-size: .85rem; }
+    table.diff { border-collapse: collapse; width: 100%; font-size: .85rem; margin-top: 1rem; }
+    table.diff td, table.diff th { border: 1px solid #e0e0e0; padding: 4px 10px; text-align: left; vertical-align: top; }
+    .diff-changed { color: #b00020; font-weight: 700; }
+    .diff-same { color: #137333; }
+    .muted { color: #888; }
+  </style>
+</head>
+<body>
+  <p class="meta"><a href="/">← todos os runs</a> · <a href="/runs/${escapeHtml(curr.runId)}">ver run</a></p>
+  <h1>Diff de regressão — ${curr.name ? title : `run <code>${escapeHtml(curr.runId)}</code>`}</h1>
+  ${bodyHtml}
 </body>
 </html>`;
 }

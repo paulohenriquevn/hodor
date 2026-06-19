@@ -213,3 +213,34 @@ describe("M4 — badge de proveniência (gerado pelo agente)", () => {
     expect(html).toContain("🤖 gerado");
   });
 });
+
+import { renderDiff } from "./render.js";
+import type { RunDiff } from "../core/index.js";
+
+describe("M5 — renderDiff (regressão)", () => {
+  const currEnv = { ...envelope([step()]), runId: "cur" } as RunEnvelope;
+  const prevEnv = { ...envelope([step()]), runId: "prev" } as RunEnvelope;
+
+  it("render_diff_highlights_status_change", () => {
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: true, headerDiffs: [], bodyChanged: false }], stepCountChanged: false, hasRegression: true };
+    const html = renderDiff(currEnv, prevEnv, diff);
+    expect(html).toContain("Mudança de comportamento detectada");
+    expect(html).toContain("status mudou");
+  });
+
+  it("render_diff_shows_no_regression_when_identical", () => {
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: false, headerDiffs: [], bodyChanged: false }], stepCountChanged: false, hasRegression: false };
+    expect(renderDiff(currEnv, prevEnv, diff)).toContain("Sem mudança de comportamento");
+  });
+
+  it("render_diff_first_run_message_when_no_previous", () => {
+    expect(renderDiff(currEnv, null, null)).toContain("Primeiro run deste cenário");
+  });
+
+  it("render_diff_escapes_header_diff_content", () => {
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: false, headerDiffs: [{ key: "x", prev: "<script>alert(1)</script>", curr: "y" }], bodyChanged: false }], stepCountChanged: false, hasRegression: true };
+    const html = renderDiff(currEnv, prevEnv, diff);
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+});

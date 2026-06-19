@@ -234,3 +234,41 @@ describe("web server — M3 review artifact (POST escreve versionável)", () => 
     expect(artifact!.steps[0]!.response.headers["content-type"]).toBe("application/json");
   });
 });
+
+describe("web server — M5 diff route", () => {
+  const UUID_A = "00000000-0000-0000-0000-00000000aa01";
+  const UUID_B = "00000000-0000-0000-0000-00000000aa02";
+  function stepBody(body: string): RunStep {
+    return {
+      request: { method: "GET", url: "http://api.test/x", headers: {} },
+      response: { status: 200, statusText: "OK", headers: { "content-type": "application/json" }, body, timings: { startedAt: "2026-06-19T00:00:00.000Z", durationMs: 1 } },
+    };
+  }
+
+  it("web_diff_route_404_for_missing_run", async () => {
+    const base = await start();
+    expect((await fetch(`${base}/runs/${UUID_A}/diff`)).status).toBe(404);
+  });
+
+  it("web_diff_route_400_for_malformed_id", async () => {
+    // EC-4: id não-UUID → 400 (scenarioKey nunca vem da URL)
+    const base = await start();
+    expect((await fetch(`${base}/runs/..%2f..%2fetc/diff`)).status).toBe(400);
+  });
+
+  it("web_diff_route_shows_first_run_message_when_no_previous", async () => {
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 0, newId: () => UUID_A }, "cen-diff"), dir!);
+    const base = await start();
+    const html = await (await fetch(`${base}/runs/${UUID_A}/diff`)).text();
+    expect(html).toContain("Primeiro run deste cenário");
+  });
+
+  it("web_diff_route_renders_diff_vs_previous", async () => {
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => UUID_A }, "cen-diff"), dir!);
+    await persistRun(buildRunEnvelope([stepBody('{"v":2}')], { now: () => 2, newId: () => UUID_B }, "cen-diff"), dir!);
+    const base = await start();
+    const html = await (await fetch(`${base}/runs/${UUID_B}/diff`)).text();
+    expect(html).toContain("Mudança de comportamento detectada");
+    expect(html).toContain("body mudou");
+  });
+});

@@ -12,10 +12,12 @@ import {
   defaultRunsDir,
   defaultVerdictsDir,
   defaultReviewsDir,
+  findPreviousRun,
+  diffRuns,
   type RunEnvelope,
   type Verdict,
 } from "../core/index.js";
-import { renderRun, renderListing, type ListingItem } from "./render.js";
+import { renderRun, renderListing, renderDiff, type ListingItem } from "./render.js";
 
 /**
  * Adaptador web (ADR D1/D2/D5 do M2): servidor HTTP nativo, server-rendered, SEM
@@ -94,6 +96,26 @@ async function route(
     if (!RUN_ID_RE.test(id)) return r400("bad id");
     if (method !== "POST") return r405("POST");
     return postVerdict(id, req, dir, verdictsDir, reviewsDir);
+  }
+
+  // M5 — diff de regressão vs run anterior do mesmo cenário (ADR D6).
+  const diffMatch = /^\/runs\/([^/]+)\/diff$/.exec(path);
+  if (diffMatch) {
+    const id = diffMatch[1]!;
+    if (!RUN_ID_RE.test(id)) return r400("bad id"); // EC-4: :id permanece UUID-validado
+    if (method !== "GET") return r405("GET");
+    try {
+      const curr = await loadRun(join(dir, `${id}.json`));
+      // scenarioKey vem do run carregado, NUNCA da URL (EC-4 — não reabre traversal).
+      const prev = await findPreviousRun(curr, dir);
+      const diff = prev ? diffRuns(prev, curr) : null;
+      return { status: 200, contentType: "text/html; charset=utf-8", body: renderDiff(curr, prev, diff) };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return { status: 404, contentType: "text/plain", body: "run not found" };
+      }
+      throw err;
+    }
   }
 
   const runMatch = /^\/runs\/([^/]+)$/.exec(path);
