@@ -54,6 +54,9 @@ export const ScenarioSchema = z.object({
   // M4 (ADR D2): proveniência OPCIONAL e aditiva — cenários M1 (sem ela) seguem
   // válidos; `schemaVersion` permanece 1. Marca origem (gerado/autorado) + fonte.
   provenance: ProvenanceSchema.optional(),
+  // M5 (ADR D1): jsonpaths de campos voláteis do body a IGNORAR no diff de regressão
+  // (field-normalization "noise" do keploy). OPCIONAL/aditivo — regras inspecionáveis.
+  noise: z.array(z.string()).optional(),
   steps: z.array(ScenarioStepSchema).min(1),
 });
 

@@ -3,9 +3,10 @@ import type { CaptureSpec } from "./scenarioSchema.js";
 import type { CapturedResponse } from "./runSchema.js";
 
 /**
- * Avalia um jsonpath sobre um body de texto. ÚNICO ponto de uso de `jsonpath-plus`
- * no domínio (DRY / encapsulamento — ADR D2): `evalAssert` também consome este
- * helper. Usa SÓ path queries (sem eval/script). Body não-JSON / miss → `null`.
+ * Avalia um jsonpath sobre um body de texto (READ — primeiro match). Ponto de
+ * leitura de `jsonpath-plus` no domínio (`evalAssert` consome este helper). O M5
+ * `maskNoise` usa o mesmo lib em modo `resultType:"all"` p/ mascarar — mesmo
+ * vocabulário jsonpath. Usa SÓ path queries (sem eval/script). Body não-JSON / miss → `null`.
  */
 export function evalJsonPath(path: string, body: string): unknown {
   try {

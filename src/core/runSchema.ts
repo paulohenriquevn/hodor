@@ -59,6 +59,9 @@ export const RunEnvelopeSchema = z.object({
   // M4 (ADR D2): proveniência OPCIONAL e aditiva — propagada do cenário gerado;
   // runs M0-M3 (sem ela) seguem válidos. A UI marca "gerado pelo agente · pendente".
   provenance: ProvenanceSchema.optional(),
+  // M5 (ADR D1): regras de noise (jsonpaths) propagadas do cenário — o diff lê daqui
+  // p/ mascarar o body. OPCIONAL/aditivo — runs M0-M4 (sem ela) seguem válidos.
+  noise: z.array(z.string()).optional(),
   steps: z.array(RunStepSchema).min(1),
 });
 

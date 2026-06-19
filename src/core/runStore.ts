@@ -26,6 +26,7 @@ export function buildRunEnvelope(
   deps: EnvelopeDeps = {},
   name?: string,
   provenance?: Provenance,
+  noise?: string[],
 ): RunEnvelope {
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? randomUUID;
@@ -37,6 +38,8 @@ export function buildRunEnvelope(
     ...(name !== undefined ? { name } : {}),
     // M4 (D2): propaga proveniência do cenário quando fornecida (aditivo).
     ...(provenance !== undefined ? { provenance } : {}),
+    // M5 (D1): propaga regras de noise do cenário quando fornecidas (aditivo).
+    ...(noise !== undefined ? { noise } : {}),
     steps,
   };
 }
