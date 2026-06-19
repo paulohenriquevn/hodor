@@ -1,0 +1,291 @@
+agent: review-m6-golden-gate-domain-api-design
+review_target: main..HEAD for plan m6-golden-gate
+domain: api-design (MCP tool contracts + regression-gate semantics)
+domain_specific_patterns_checked:
+  - "findGoldenRun = most-recent approved run of scenarioKey (D1)"
+  - "checkScenario re-runs scenario, diffs vs golden, 3-way status (D2/D5)"
+  - "diffRuns masks each side with its own noise; surfaces noiseChanged (M5 F-dom-1)"
+  - "replaySuite catalog = listDrafts ∩ golden; no_baseline non-fatal (D3/D5)"
+  - "MCP outputSchema = machine-consumable verdict (D4)"
+  - "no tool writes verdict; human is sole approver (DoD #2)"
+
+verdict_summary:
+  blocker: 0
+  high: 2
+  medium: 3
+  low: 2
+  info: 1
+
+findings:
+  # ─────────────────────────────────────────────────────────────────────────
+  # HIGH
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: F-dom-1
+    severity: HIGH
+    file: src/mcp/server.ts
+    line: 169-173
+    plan_ref: "D4 — outputSchema machine-consumable; D5 — status mapping"
+    domain_anchor: "diffRuns.ts:29-30,72 (noiseChanged surfaced); render.ts:308 (web exposes it)"
+    summary: >
+      check_scenario's outputSchema DROPS noiseChanged — the machine consumer (the
+      agent) loses the exact signal the M5 F-dom-1 fix added. The web UI shows
+      "⚠ regras de noise mudaram — revise com atenção" (render.ts:308), but the MCP
+      tool reduces the verdict to {status, runId, hasRegression}. When the golden was
+      approved under one noise set and the current scenario carries a different noise
+      set, diffRuns sets noiseChanged=true but status is still ok|regression — so the
+      agent cannot tell "ok, clean baseline" from "ok, but the masking rules drifted
+      and a real change may be hidden/over-surfaced". A human at the web gate sees
+      this; the agent at the MCP gate (the PRIMARY consumer per DoD #2/#3) is blind.
+    evidence: |
+      ```ts
+      // server.ts — check_scenario outputSchema
+      outputSchema: {
+        status: z.enum(["ok", "regression", "no_baseline"]),
+        runId: z.string(),
+        hasRegression: z.boolean(),
+        // noiseChanged is NOT here — diff.noiseChanged is computed and thrown away
+      },
+      ...
+      const out = { status, runId: run.runId, hasRegression: diff?.hasRegression ?? false };
+      // diff.noiseChanged available at line 176, never propagated
+      ```
+      ```ts
+      // diffRuns.ts:72 — the signal IS produced
+      const noiseChanged = !sameNoise(prevNoise, currNoise);
+      ```
+    recommended_action: >
+      Add `noiseChanged: z.boolean()` to check_scenario.outputSchema and set
+      `noiseChanged: diff?.noiseChanged ?? false` in `out`. Parity with the web
+      render (render.ts:308) — the agent gate must not be weaker than the human gate.
+      For replay_suite, surface a suite-level `noiseChanged` count or per-result flag.
+
+  - id: F-dom-2
+    severity: HIGH
+    file: src/core/replaySuite.ts
+    line: 39-64
+    plan_ref: "D3 — catálogo = listDrafts ∩ golden; ROADMAP §M6 DoD #3 'roda TODOS os cenários que têm golden'"
+    domain_anchor: "blueprint Coverage Corner 3 / D3 — drafts/ é a ÚNICA fonte dos specs"
+    summary: >
+      replaySuite gives a FALSE SENSE OF COMPLETENESS. The catalog is ONLY drafts/.
+      A scenario that was run via run_scenario and then APPROVED (so it HAS a golden in
+      runs/+verdicts/) but was never saved via save_scenario_draft is NOT in drafts/ —
+      so it is silently excluded from the suite. DoD #3 says "run ALL scenarios that
+      have a golden"; the implementation runs "all DRAFTS, of which some have a golden".
+      The report's allOk:true can therefore be reported while one or more approved
+      (golden-bearing) scenarios were never exercised. The agent reads allOk:true and
+      declares a change ready — but the gate never re-ran the regressed approved
+      scenario because it lacked a draft. The plan acknowledges this as a "limitação
+      honesta" (D3 / Drawbacks row 3) but the REPORT itself emits no signal of it:
+      replaySuite does not count goldens-without-a-draft, so the dishonesty is silent.
+    evidence: |
+      ```ts
+      // replaySuite.ts — only drafts are iterated
+      for (const id of await listDrafts(draftsDir)) { ... }
+      // SuiteReport has total/ok/regression/noBaseline/error
+      // but NO "uncataloged goldens" count — approved scenarios outside drafts/
+      // are invisible. allOk can be true while a regressed golden was never run.
+      ```
+    recommended_action: >
+      At minimum, the SuiteReport must EXPOSE the blind spot so allOk is honest:
+      compute the set of distinct approved scenarioKeys in runs/+verdicts/ that have
+      NO matching draft, and report `uncatalogedGoldens: number` (+ the keys) in
+      SuiteReport and the replay_suite outputSchema. This converts a silent gap into a
+      machine-readable warning the agent can act on (e.g., prompt save_scenario_draft).
+      Do NOT auto-fail on it, but DO NOT hide it (CLAUDE.md §3 honestidade; the plan
+      promises the limitation is "documentado" — documentation in prose is not enough
+      when the gate's own output claims allOk).
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # MEDIUM
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: F-dom-3
+    severity: MEDIUM
+    file: src/core/checkScenario.ts
+    line: 41-42
+    plan_ref: "D5 — status 3-way derivado de hasRegression; D6 — status mapping"
+    domain_anchor: "blueprint D6 status table; executeRequest.ts:25 (only network error throws)"
+    summary: >
+      The gate reports status:"ok" for a CONSISTENTLY-BROKEN service. A 500 is a
+      successful HTTP response in Hodor (executeRequest only throws on network/timeout,
+      executeRequest.ts:25). If the golden was approved while the endpoint returned 500
+      and the current run ALSO returns 500 with the same body, diffRuns reports
+      hasRegression=false → checkScenario returns "ok". Semantically this is defensible
+      for a pure REGRESSION gate ("regression = changed; identical = no regression"),
+      but it is a real foot-gun: the agent reads "ok" and infers "the scenario passes",
+      not "the scenario is unchanged from a known-broken baseline". The asserts in the
+      run (e.g., status==200) are evaluated by runScenario but their pass/fail is NOT
+      consulted by checkScenario — diffRuns compares behavior, not assertion outcome.
+      So a golden full of failing asserts that is approved-by-mistake (or approved as
+      a known-bad placeholder) yields a green gate forever.
+    evidence: |
+      ```ts
+      // checkScenario.ts — status derives ONLY from diffRuns, never from run asserts
+      const diff = diffRuns(golden, run);
+      return { status: diff.hasRegression ? "regression" : "ok", diff, run };
+      // run.steps[].asserts (computed by runScenario) are ignored here
+      ```
+    recommended_action: >
+      Decide and DOCUMENT the contract explicitly. Two honest options: (a) keep
+      regression-only semantics but rename/annotate so the agent does not read "ok" as
+      "healthy" — e.g., add `assertsPassed: boolean` (derived from run.steps[].asserts)
+      to CheckResult/outputSchema so the agent distinguishes "unchanged AND asserts
+      green" from "unchanged but asserts red". (b) If out of M6 scope, add a one-line
+      note to the tool description and a Drawbacks row: "check_scenario detects
+      CHANGE vs golden, not health; a consistently-failing endpoint reports ok". The
+      blueprint D6 table only covers ok/regression/no_baseline and never addresses the
+      both-broken case — this is an undocumented semantic corner of the gate's core.
+
+  - id: F-dom-4
+    severity: MEDIUM
+    file: src/mcp/server.ts
+    line: 169-184
+    plan_ref: "D4 — veredito consumível por máquina; blueprint Corner 3 (CheckResult shape)"
+    domain_anchor: "blueprint Corner 3: check_scenario → {status, diff: RunDiff|null, goldenRunId}"
+    summary: >
+      The MCP check_scenario contract is ergonomically THIN versus what the blueprint
+      specified and what an acting agent needs. (1) `hasRegression` is redundant with
+      `status==="regression"` — it carries zero extra bits over status, so the schema
+      ships a derived boolean while OMITTING the actually-useful fields. (2) The
+      blueprint (Corner 3, Recommendation 2) specified the output should carry
+      `goldenRunId` (which golden was compared) and `diff` — neither is in the
+      outputSchema. Without goldenRunId the agent cannot deep-link the human to the
+      baseline it compared against; without any diff detail (even a per-step changed
+      summary) the agent gets a verdict it cannot ACT on beyond "something changed" —
+      it must blindly re-drive the human to the web UI. The full RunDiff need not be
+      embedded, but dropping BOTH the diff summary AND goldenRunId leaves the
+      machine-readable verdict non-actionable, undercutting D4's whole purpose.
+    evidence: |
+      ```ts
+      // Blueprint Corner 3 specified:
+      //   check_scenario → { status, diff: RunDiff|null, goldenRunId: string|null }
+      // Implemented outputSchema:
+      outputSchema: { status, runId, hasRegression }
+      //   - hasRegression ≡ (status === "regression")  → redundant
+      //   - goldenRunId   → MISSING (agent can't cite the baseline)
+      //   - diff summary  → MISSING (agent can't localize the change)
+      ```
+    recommended_action: >
+      Replace the redundant `hasRegression` with the fields the agent can act on:
+      add `goldenRunId: z.string().nullable()` and a compact change summary, e.g.
+      `changedSteps: z.array(z.number())` (indices where statusChanged||bodyChanged||
+      headerDiffs.length>0). Keep status as the primary token. This matches the
+      blueprint's declared CheckResult shape and makes the verdict deep-linkable +
+      localizable without forcing the agent back to the web UI.
+
+  - id: F-dom-5
+    severity: MEDIUM
+    file: src/core/replaySuite.ts
+    line: 50-55
+    plan_ref: "EC-1 — isola cenário falho em try/catch; status 4-way ok|regression|no_baseline|error"
+    domain_anchor: "CLAUDE.md §8 Error Handling — catch genérico engole o erro"
+    summary: >
+      The EC-1 isolation uses a BARE `catch {}` that collapses EVERY thrown error into
+      status:"error" with no diagnostic captured. This is the catch-(Exception)-and-
+      swallow anti-pattern (CLAUDE.md §8): a target-down RequestExecutionError, a
+      corrupted draft that loadDraft returned non-null-but-invalid, a programming bug
+      (TypeError) in checkScenario, and an OOM are ALL flattened to the same opaque
+      "error" with the cause discarded. The suite then reports error:N with zero
+      breadcrumbs — the agent (and the human) cannot tell "service unreachable"
+      (expected, retry later) from "the gate itself is broken" (a real defect that
+      must NOT be reported as a benign per-scenario error). For the heart of M6 — a
+      regression gate — silently absorbing a gate-internal bug into a per-item "error"
+      bucket is exactly the failure mode the gate exists to prevent.
+    evidence: |
+      ```ts
+      try {
+        status = (await checkScenario(draft, {...})).status;
+      } catch {
+        status = "error";   // cause discarded — no message, no stderr, no per-item reason
+      }
+      ```
+    recommended_action: >
+      Capture and surface the cause. Carry an optional `error?: string` (or
+      `errorReason`) on SuiteItemResult and log to stderr (pillar c) per failing item.
+      Consider distinguishing RequestExecutionError (expected target-down → "error")
+      from unexpected errors (re-throw or flag separately) so a gate-internal bug is
+      not masked as a benign scenario error. At minimum: do not discard the cause.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # LOW
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: F-dom-6
+    severity: LOW
+    file: src/core/replaySuite.ts
+    line: 51-60
+    plan_ref: "D2 — checkScenario re-roda e persiste no adaptador; EC-3 — core não persiste"
+    domain_anchor: "checkScenario.ts:37-39 (core não persiste); server.ts:177 (adaptador persiste)"
+    summary: >
+      replaySuite calls checkScenario directly (core path), which by design does NOT
+      persist the fresh run — and replaySuite itself does not persist either. So a
+      regression detected by the SUITE leaves no run on disk for the human to later
+      review/approve, whereas a regression detected by the single check_scenario MCP
+      tool DOES persist (server.ts:177). The two consumer paths of the same core have
+      asymmetric side-effects: the agent who finds a regression via replay_suite gets
+      allOk:false but no persisted artifact to point the human at. The plan's D2
+      "fechar o loop autor→aprovação→consumo" relies on the regressed run being
+      reviewable; the suite path quietly breaks that loop.
+    evidence: |
+      ```ts
+      // single-tool path persists (server.ts:177):
+      const path = await persistRun(run);
+      // suite path (replaySuite.ts:51) discards run — only .status is kept:
+      status = (await checkScenario(draft, {...})).status;
+      ```
+    recommended_action: >
+      Either persist regressed runs from the replay_suite MCP adapter (so a human can
+      approve them later, mirroring check_scenario), or document explicitly that
+      replay_suite is a read-only gate and the agent must re-run check_scenario on each
+      regressed scenarioKey to produce a reviewable artifact.
+
+  - id: F-dom-7
+    severity: LOW
+    file: src/mcp/server.ts
+    line: 188-211
+    plan_ref: "D4/D5 — replay_suite outputSchema; blueprint Corner 3 SuiteReport shape"
+    domain_anchor: "blueprint Corner 3: replay_suite → {allOk,...,scenarios:[{name,status,goldenRunId,hasRegression}]}"
+    summary: >
+      replay_suite's outputSchema returns only the aggregate counters and OMITS the
+      per-scenario results[] array. The blueprint (Corner 3) specified
+      `scenarios: [{name, status, goldenRunId, hasRegression}]`. The core SuiteReport
+      DOES carry results[] (replaySuite.ts:60) but the MCP adapter strips it. An agent
+      that gets allOk:false with regression:2 has NO machine-readable way to learn
+      WHICH two scenarios regressed — it cannot act (re-check, deep-link, prompt
+      approval) without the keys. The text content also omits results. This makes the
+      suite verdict non-actionable at the granularity the agent needs.
+    evidence: |
+      ```ts
+      const out = { allOk, total, ok, regression, noBaseline, error };
+      // r.results (per-scenario {scenarioKey, status}) is dropped — agent can't tell WHICH regressed
+      ```
+    recommended_action: >
+      Add `results` to the replay_suite outputSchema (array of {scenarioKey, status},
+      ideally + goldenRunId per the blueprint) so the agent can localize and act on
+      each regressed/errored scenario.
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # INFO
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: F-dom-8
+    severity: INFO
+    file: src/core/runHistory.ts
+    line: 83-96
+    plan_ref: "D1 — findGoldenRun = run aprovado mais recente do cenário"
+    domain_anchor: "blueprint D1; plan T1.1 acceptance"
+    summary: >
+      findGoldenRun semantics VERIFIED CORRECT for the adversarial cases raised.
+      It sorts ascending by compareRuns (total order createdAt,runId) then iterates
+      from newest→oldest returning the first `approved` (filters loadVerdict==="approved",
+      not hasVerdict, so rejected runs are excluded). The "newer approved with a
+      human-mistaken bug" case is correctly out of code's scope (human-approval error,
+      not a gate defect). Orphan-key-on-edit (risk #1) correctly yields null →
+      no_baseline. No finding — recorded as positive confirmation.
+    evidence: |
+      ```ts
+      const ofScenario = (await loadAllRuns(dir)).filter((r) => scenarioKey(r) === key).sort(compareRuns);
+      for (let i = ofScenario.length - 1; i >= 0; i--) {     // newest → oldest
+        const verdict = await loadVerdict(ofScenario[i]!.runId, verdictsDir);
+        if (verdict?.verdict === "approved") return ofScenario[i]!;  // first approved = golden
+      }
+      return null;
+      ```
+    recommended_action: "None — confirmed correct. Listed for review completeness."

@@ -5,6 +5,7 @@ import type {
   CapturedResponse,
   AssertResult,
   Verdict,
+  RunDiff,
 } from "../core/index.js";
 
 /** Item da listagem de runs (GET /). */
@@ -17,6 +18,10 @@ export interface ListingItem {
   verdict: Verdict["verdict"] | null;
   // M4: origem do cenário (badge "gerado pelo agente"). Ausente em runs M0-M3.
   origin?: "agent-generated" | "human-authored";
+  // M6: este run regride vs o golden aprovado do cenário (badge "regressão"). Best-effort.
+  regression?: boolean;
+  // M6.1: este run É o golden (baseline aprovado atual) do cenário. Best-effort.
+  isGolden?: boolean;
 }
 
 /**
@@ -155,6 +160,18 @@ function provenanceBadge(env: RunEnvelope, verdict: Verdict | null): string {
   return `<p class='provenance agent'>🤖 gerado pelo agente${pending}${src}</p>`;
 }
 
+/**
+ * Aviso de aprovação perigosa (M6.1): se o run tem asserts FALHANDO e ainda está
+ * pendente, avisa que aprová-lo o tornará o baseline de regressão (golden) — protege
+ * o humano-no-gate de promover um comportamento quebrado por engano. Não bloqueia.
+ */
+function failingAssertsWarning(env: RunEnvelope, verdict: Verdict | null): string {
+  if (verdict) return ""; // já decidido — sem aviso
+  const hasFailing = env.steps.some((s) => (s.asserts ?? []).some((a) => !a.pass));
+  if (!hasFailing) return "";
+  return `<p class='warn-approve'>⚠ Este run tem <strong>asserts falhando</strong>. Aprová-lo o tornará o <strong>baseline de regressão (golden)</strong> deste cenário — confirme que o comportamento é mesmo o esperado.</p>`;
+}
+
 /** Selo do verdict atual (EC-1: escapa `note`, input do humano). */
 function verdictBadge(verdict: Verdict | null): string {
   if (!verdict) return `<p class='verdict pending'>Verdict: <strong>pendente</strong></p>`;
@@ -207,17 +224,19 @@ export function renderRun(env: RunEnvelope, verdict: Verdict | null = null): str
     .verdict.rejected { background: #fdecef; color: #b00020; }
     .verdict.pending { background: #f6f8fa; color: #666; }
     .provenance.agent { font-size: .85rem; background: #eef3fb; color: #0b66c3; padding: .4rem .75rem; border-radius: 6px; }
+    .warn-approve { font-size: .85rem; background: #fff4d6; color: #8a6d00; padding: .5rem .75rem; border-radius: 6px; border: 1px solid #e6c200; }
     .verdict-form { margin: 1rem 0; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
     .verdict-form textarea { font-family: inherit; flex: 1; min-width: 200px; }
     a { color: #0b66c3; }
   </style>
 </head>
 <body>
-  <p class="meta"><a href="/">← todos os runs</a></p>
+  <p class="meta"><a href="/">← todos os runs</a> · <a href="/runs/${escapeHtml(env.runId)}/diff">ver diff vs anterior</a></p>
   <h1>Hodor run <code>${escapeHtml(env.runId)}</code>${env.name ? ` — ${title}` : ""}</h1>
   <p class="meta">schemaVersion ${env.schemaVersion} · ${escapeHtml(env.createdAt)} · ${env.steps.length} step(s)</p>
   ${provenanceBadge(env, verdict)}
   ${verdictBadge(verdict)}
+  ${failingAssertsWarning(env, verdict)}
   ${verdictForm(env.runId)}
   ${steps}
 </body>
@@ -231,6 +250,8 @@ const LISTING_STYLE = `body { font-family: ui-monospace, SFMono-Regular, Menlo, 
     .pf-pass { color: #137333; font-weight: 700; } .pf-fail { color: #b00020; font-weight: 700; }
     .v-approved { color: #137333; } .v-rejected { color: #b00020; } .v-pending { color: #888; }
     .agent-tag { font-size: .75rem; background: #eef3fb; color: #0b66c3; padding: 1px 6px; border-radius: 4px; }
+    .reg-tag { font-size: .75rem; background: #fdecef; color: #b00020; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
+    .gold-tag { font-size: .75rem; background: #fff4d6; color: #8a6d00; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
     .muted { color: #888; }`;
 
 /** Página de listagem (GET /) — runs mais recentes primeiro. */
@@ -251,8 +272,14 @@ export function renderListing(items: ListingItem[]): string {
         it.origin === "agent-generated"
           ? ` <span class='agent-tag'>🤖 gerado${it.verdict ? "" : " · pendente"}</span>`
           : "";
+      // M6: badge de regressão vs golden aprovado (DoD #4).
+      const reg = it.regression
+        ? ` <a class='reg-tag' href='/runs/${escapeHtml(it.runId)}/diff?vs=golden'>⚠ regressão</a>`
+        : "";
+      // M6.1: badge do golden — qual run É o baseline aprovado atual do cenário.
+      const gold = it.isGolden ? ` <span class='gold-tag'>🏆 golden</span>` : "";
       return `<tr>
-        <td><a href='/runs/${escapeHtml(it.runId)}'>${it.name ? escapeHtml(it.name) : "(sem cenário)"}</a>${agent}</td>
+        <td><a href='/runs/${escapeHtml(it.runId)}'>${it.name ? escapeHtml(it.name) : "(sem cenário)"}</a>${gold}${agent}${reg}</td>
         <td><code>${escapeHtml(it.runId)}</code></td>
         <td>${escapeHtml(it.createdAt)}</td>
         <td>${it.stepCount}</td>
@@ -275,6 +302,83 @@ export function renderListing(items: ListingItem[]): string {
 <body>
   <h1>Hodor — execuções para revisão</h1>
   ${table}
+</body>
+</html>`;
+}
+
+/**
+ * Render do diff de regressão (M5, ADR D6): destaca status/headers/body mudados
+ * entre o run atual e o anterior do mesmo cenário, APÓS normalização (voláteis +
+ * noise já suprimidos pelo core). Sem run anterior → mensagem "primeiro run".
+ * Todo conteúdo dinâmico escapado (anti-XSS, herdado do M2).
+ */
+export function renderDiff(
+  curr: RunEnvelope,
+  prev: RunEnvelope | null,
+  diff: RunDiff | null,
+  baselineKind: "previous" | "golden" = "previous",
+): string {
+  const title = curr.name ? escapeHtml(curr.name) : escapeHtml(curr.runId);
+  let bodyHtml: string;
+  if (!prev || !diff) {
+    // F-tests-1: distingue "sem golden aprovado" de "primeiro run" (vs anterior).
+    bodyHtml =
+      baselineKind === "golden"
+        ? `<p class='muted'>Sem baseline aprovado (golden) para esta versão do cenário — aprove um run para criar o baseline de regressão.</p>`
+        : `<p class='muted'>Primeiro run deste cenário — não há execução anterior para comparar.</p>`;
+  } else {
+    const banner = diff.hasRegression
+      ? `<p class='diff-changed'>⚠ Mudança de comportamento detectada vs run anterior.</p>`
+      : `<p class='diff-same'>✓ Sem mudança de comportamento (após normalização de voláteis + noise).</p>`;
+    const countNote = diff.stepCountChanged
+      ? `<p class='diff-changed'>Número de steps mudou: ${prev.steps.length} → ${curr.steps.length}.</p>`
+      : "";
+    const noiseNote = diff.noiseChanged
+      ? `<p class='diff-changed'>⚠ As regras de noise mudaram entre os runs — revise o diff com atenção.</p>`
+      : "";
+    const rows = diff.steps
+      .map((s) => {
+        const headerCell =
+          s.headerDiffs.length === 0
+            ? `<span class='muted'>—</span>`
+            : s.headerDiffs
+                .map((h) => `<code>${escapeHtml(h.key)}</code>: ${escapeHtml(h.prev ?? "(ausente)")} → ${escapeHtml(h.curr ?? "(ausente)")}`)
+                .join("<br/>");
+        const cell = (changed: boolean, label: string) =>
+          changed ? `<td class='diff-changed'>${label}</td>` : `<td class='diff-same'>—</td>`;
+        return `<tr>
+          <td>${s.stepIndex + 1}</td>
+          ${cell(s.statusChanged, "status mudou")}
+          <td>${headerCell}</td>
+          ${cell(s.bodyChanged, "body mudou")}
+        </tr>`;
+      })
+      .join("");
+    bodyHtml = `${banner}${countNote}${noiseNote}
+    <p class='meta'>atual <code>${escapeHtml(curr.runId)}</code> vs anterior <code>${escapeHtml(prev.runId)}</code></p>`;
+    bodyHtml += `
+    <table class='diff'><thead><tr><th>Step</th><th>Status</th><th>Headers (não-voláteis)</th><th>Body</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Hodor — diff ${escapeHtml(curr.runId)}</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem; color: #1a1a1a; }
+    h1 { font-size: 1.1rem; } a { color: #0b66c3; } code { word-break: break-all; }
+    .meta { color: #666; font-size: .85rem; }
+    table.diff { border-collapse: collapse; width: 100%; font-size: .85rem; margin-top: 1rem; }
+    table.diff td, table.diff th { border: 1px solid #e0e0e0; padding: 4px 10px; text-align: left; vertical-align: top; }
+    .diff-changed { color: #b00020; font-weight: 700; }
+    .diff-same { color: #137333; }
+    .muted { color: #888; }
+  </style>
+</head>
+<body>
+  <p class="meta"><a href="/">← todos os runs</a> · <a href="/runs/${escapeHtml(curr.runId)}">ver run</a></p>
+  <h1>Diff de regressão — ${curr.name ? title : `run <code>${escapeHtml(curr.runId)}</code>`}</h1>
+  ${bodyHtml}
 </body>
 </html>`;
 }

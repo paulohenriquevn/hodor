@@ -10,7 +10,24 @@ import {
   ScenarioSchema,
   ProvenanceSchema,
   saveDraft,
+  scenarioKey,
+  pruneRunHistory,
+  checkScenario,
+  replaySuite,
+  type RunEnvelope,
 } from "../core/index.js";
+
+/** Retenção (M5 D5): poda o histórico do cenário após persistir um run. Best-effort
+ * (falha de poda não derruba a tool — o run já foi gravado). */
+async function pruneAfterPersist(env: RunEnvelope): Promise<void> {
+  try {
+    const { removed, pinned, kept } = await pruneRunHistory(scenarioKey(env));
+    // Observável (pillar c, F-wire-1): a retenção (risco #2) loga no SUCESSO, não só na falha.
+    console.error(JSON.stringify({ event: "prune_history", scenario: scenarioKey(env), removed, pinned, kept }));
+  } catch (err) {
+    console.error(JSON.stringify({ event: "prune_failed", error: String(err) }));
+  }
+}
 
 /**
  * Adaptador MCP (ADR D1/D2/D5). Expõe a tool `run_request` sobre stdio,
@@ -32,6 +49,16 @@ export function getScenarioRunCount(): number {
 let draftSavedCount = 0;
 export function getDraftSavedCount(): number {
   return draftSavedCount;
+}
+
+let checkCount = 0;
+export function getCheckCount(): number {
+  return checkCount;
+}
+
+let replayCount = 0;
+export function getReplayCount(): number {
+  return replayCount;
 }
 
 /** Constrói o McpServer configurado (sem conectar) — permite teste in-memory. */
@@ -59,6 +86,7 @@ export function buildServer(): McpServer {
       const step = await executeRequest({ method, url, headers, body });
       const env = buildRunEnvelope([step]);
       const path = await persistRun(env);
+      await pruneAfterPersist(env); // M5: retenção last-N por cenário
       runCount += 1;
       // Runtime metric em stderr (pillar c) — stdout é do protocolo.
       console.error(
@@ -90,6 +118,7 @@ export function buildServer(): McpServer {
       // Caller de produção da engine (wiring triad pillar a).
       const env = await runScenario(scenario);
       const path = await persistRun(env);
+      await pruneAfterPersist(env); // M5: retenção last-N por cenário
       scenarioRunCount += 1;
       console.error(
         JSON.stringify({ event: "run_scenario", steps: env.steps.length, path }),
@@ -124,6 +153,65 @@ export function buildServer(): McpServer {
         content: [{ type: "text" as const, text: JSON.stringify({ draftId, path }, null, 2) }],
         structuredContent: { draftId, path },
       };
+    },
+  );
+
+  // M6 — gate de regressão (ADR D4). check_scenario re-roda + diff vs golden;
+  // retorna veredito ESTRUTURADO (outputSchema) consumível por máquina. Persiste o
+  // run novo (consistência com run_scenario) e poda. NUNCA grava verdict.
+  server.registerTool(
+    "check_scenario",
+    {
+      title: "Check scenario against approved golden",
+      description:
+        "Executa um cenário contra o serviço atual e compara com o último run APROVADO (golden), retornando {status: ok|regression|no_baseline}. NÃO aprova — o verdict humano (M2) é o único aprovador.",
+      inputSchema: ScenarioSchema.shape,
+      outputSchema: {
+        status: z.enum(["ok", "regression", "no_baseline"]),
+        runId: z.string(),
+        goldenRunId: z.string().nullable(),
+        noiseChanged: z.boolean(),
+      },
+    },
+    async (scenario) => {
+      const { status, run, goldenRunId, noiseChanged } = await checkScenario(scenario);
+      const path = await persistRun(run); // o run novo entra no histórico p/ revisão
+      await pruneAfterPersist(run);
+      checkCount += 1;
+      // goldenRunId → o agente busca o diff completo via web (/runs/:id/diff?vs=golden);
+      // noiseChanged → mesmo em `ok`, sinaliza que regras de noise divergiram (F-dom-1/D4).
+      const out = { status, runId: run.runId, goldenRunId, noiseChanged };
+      console.error(JSON.stringify({ event: "check_scenario", status, runId: run.runId, goldenRunId, noiseChanged, path }));
+      return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }], structuredContent: out };
+    },
+  );
+
+  // M6 — replay de suíte (ADR D5). Roda todos os cenários do catálogo com golden e
+  // agrega pass/fail — o gate que o agente invoca antes de declarar a mudança pronta.
+  server.registerTool(
+    "replay_suite",
+    {
+      title: "Replay approved scenarios as a regression gate",
+      description:
+        "Roda todos os cenários do catálogo (drafts/) que têm golden aprovado contra o serviço atual e retorna um relatório agregado pass/fail. allOk=false quando há regressão ou erro.",
+      inputSchema: {},
+      outputSchema: {
+        allOk: z.boolean(),
+        total: z.number(),
+        ok: z.number(),
+        regression: z.number(),
+        noBaseline: z.number(),
+        error: z.number(),
+        uncataloguedGoldens: z.number(),
+      },
+    },
+    async () => {
+      const r = await replaySuite();
+      replayCount += 1;
+      // uncataloguedGoldens → o agente sabe quantos cenários aprovados NÃO estão na suíte (F-dom-2).
+      const out = { allOk: r.allOk, total: r.total, ok: r.ok, regression: r.regression, noBaseline: r.noBaseline, error: r.error, uncataloguedGoldens: r.uncataloguedGoldens };
+      console.error(JSON.stringify({ event: "replay_suite", ...out }));
+      return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }], structuredContent: out };
     },
   );
 

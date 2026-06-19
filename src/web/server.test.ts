@@ -234,3 +234,77 @@ describe("web server — M3 review artifact (POST escreve versionável)", () => 
     expect(artifact!.steps[0]!.response.headers["content-type"]).toBe("application/json");
   });
 });
+
+describe("web server — M5 diff route", () => {
+  const UUID_A = "00000000-0000-0000-0000-00000000aa01";
+  const UUID_B = "00000000-0000-0000-0000-00000000aa02";
+  function stepBody(body: string): RunStep {
+    return {
+      request: { method: "GET", url: "http://api.test/x", headers: {} },
+      response: { status: 200, statusText: "OK", headers: { "content-type": "application/json" }, body, timings: { startedAt: "2026-06-19T00:00:00.000Z", durationMs: 1 } },
+    };
+  }
+
+  it("web_diff_route_404_for_missing_run", async () => {
+    const base = await start();
+    expect((await fetch(`${base}/runs/${UUID_A}/diff`)).status).toBe(404);
+  });
+
+  it("web_diff_route_400_for_malformed_id", async () => {
+    // EC-4: id não-UUID → 400 (scenarioKey nunca vem da URL)
+    const base = await start();
+    expect((await fetch(`${base}/runs/..%2f..%2fetc/diff`)).status).toBe(400);
+  });
+
+  it("web_diff_route_shows_first_run_message_when_no_previous", async () => {
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 0, newId: () => UUID_A }, "cen-diff"), dir!);
+    const base = await start();
+    const html = await (await fetch(`${base}/runs/${UUID_A}/diff`)).text();
+    expect(html).toContain("Primeiro run deste cenário");
+  });
+
+  it("web_diff_route_renders_diff_vs_previous", async () => {
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => UUID_A }, "cen-diff"), dir!);
+    await persistRun(buildRunEnvelope([stepBody('{"v":2}')], { now: () => 2, newId: () => UUID_B }, "cen-diff"), dir!);
+    const base = await start();
+    const html = await (await fetch(`${base}/runs/${UUID_B}/diff`)).text();
+    expect(html).toContain("Mudança de comportamento detectada");
+    expect(html).toContain("body mudou");
+  });
+});
+
+describe("web server — M6 diff vs golden", () => {
+  const G = "00000000-0000-0000-0000-0000000000g1";
+  const C = "00000000-0000-0000-0000-0000000000c1";
+  function stepBody(body: string): RunStep {
+    return { request: { method: "GET", url: "http://api.test/x", headers: {} },
+      response: { status: 200, statusText: "OK", headers: { "content-type": "application/json" }, body, timings: { startedAt: "2026-06-19T00:00:00.000Z", durationMs: 1 } } };
+  }
+
+  it("web_diff_route_vs_golden_renders_against_golden", async () => {
+    // golden aprovado (value=1) + run atual (value=2) → ?vs=golden destaca a regressão
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => G }, "cg"), dir!);
+    const { saveVerdict } = await import("../core/index.js");
+    await saveVerdict({ runId: G, verdict: "approved", decidedAt: "x" }, vdir!);
+    await persistRun(buildRunEnvelope([stepBody('{"v":2}')], { now: () => 2, newId: () => C }, "cg"), dir!);
+    const base = await start();
+    const html = await (await fetch(`${base}/runs/${C}/diff?vs=golden`)).text();
+    expect(html).toContain("Mudança de comportamento detectada");
+  });
+
+  it("web_diff_route_vs_golden_no_baseline_message", async () => {
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => C }, "cg2"), dir!);
+    const base = await start();
+    const html = await (await fetch(`${base}/runs/${C}/diff?vs=golden`)).text();
+    expect(html).toContain("Sem baseline aprovado (golden)"); // F-tests-1: mensagem golden-aware
+  });
+
+  it("web_diff_route_default_still_vs_previous", async () => {
+    await persistRun(buildRunEnvelope([stepBody('{"v":1}')], { now: () => 1, newId: () => G }, "cg3"), dir!);
+    await persistRun(buildRunEnvelope([stepBody('{"v":2}')], { now: () => 2, newId: () => C }, "cg3"), dir!);
+    const base = await start();
+    // sem ?vs → comportamento M5 (vs anterior): compara C vs G (anterior), detecta mudança
+    const html = await (await fetch(`${base}/runs/${C}/diff`)).text();
+    expect(html).toContain("Mudança de comportamento detectada");
+  });
+});

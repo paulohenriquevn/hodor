@@ -1,0 +1,49 @@
+{
+  "artifactVersion": 1,
+  "createdAt": "2026-06-19T22:13:19.405Z",
+  "provenance": {
+    "generatedAt": "2026-06-19T22:13:19.384Z",
+    "origin": "agent-generated",
+    "sourceKind": "endpoint"
+  },
+  "runId": "00000000-0000-0000-0000-000000000004",
+  "scenarioName": "saude-api",
+  "steps": [
+    {
+      "asserts": [
+        {
+          "actual": 200,
+          "expected": 200,
+          "op": "equals",
+          "pass": true,
+          "source": "status",
+          "value": 200
+        }
+      ],
+      "captures": {},
+      "request": {
+        "headers": {
+          "user-agent": "hodor"
+        },
+        "method": "GET",
+        "url": "http://127.0.0.1:46711/saude"
+      },
+      "response": {
+        "body": "{\"status\":\"healthy\",\"uptime\":\"ok\"}",
+        "headers": {
+          "connection": "keep-alive",
+          "content-length": "34",
+          "content-type": "application/json",
+          "keep-alive": "timeout=5"
+        },
+        "status": 200,
+        "statusText": "OK"
+      }
+    }
+  ],
+  "verdict": {
+    "decidedAt": "2026-06-19T22:16:31.075Z",
+    "runId": "00000000-0000-0000-0000-000000000004",
+    "verdict": "rejected"
+  }
+}

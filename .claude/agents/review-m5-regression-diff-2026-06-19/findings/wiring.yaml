@@ -1,0 +1,154 @@
+agent: review-m5-regression-diff-wiring
+review_target: main..HEAD for plan m5-regression-diff
+plan: .claude/knowledge-base/plans/m5-regression-diff-plan.md
+date: 2026-06-19
+
+triad_revalidation:
+  # New M5 public exports in src/core/index.ts (lines 57-59)
+  total_new_symbols: 10   # maskNoise, NOISE_SENTINEL, diffRuns, RunDiff, StepDiff, HeaderDiff, scenarioKey, findPreviousRun, pruneRunHistory, defaultHistoryLimit
+  pillar_a_honest_pass: 7 / 10   # see per-symbol breakdown; 7 have a REAL production caller, 3 are export-for-API/internal-default
+  pillar_b_honest_pass: 10 / 10  # every symbol is exercised in the Act phase of a test (unit + E2E)
+  pillar_c_observed: 5 / 6        # run/scenario/diff observable; retention SUCCESS path is NOT logged (only failure)
+
+per_symbol:
+  - symbol: maskNoise
+    pillar_a: PASS
+    production_caller: src/core/diffRuns.ts:34 (normalizedBody → maskNoise) — real call, exercised on every diff
+    pillar_b: PASS — src/core/maskNoise.test.ts (8 cases, Act phase calls maskNoise)
+    classification: production-wired
+  - symbol: NOISE_SENTINEL
+    pillar_a: PASS
+    production_caller: src/core/maskNoise.ts:31 (assigned to masked node) — real internal use
+    classification: production-wired (constant, also re-exported on public API)
+  - symbol: diffRuns
+    pillar_a: PASS
+    production_caller: src/web/server.ts:111 (GET /runs/:id/diff route) — real production caller; also src/m5-e2e.test.ts
+    pillar_b: PASS — src/core/diffRuns.test.ts (8 cases) + m5-e2e.test.ts
+    pillar_c: PASS — RunDiff rendered to HTML by renderDiff; E2E asserts "Mudança de comportamento detectada"
+    classification: production-wired
+  - symbol: RunDiff
+    pillar_a: PASS
+    production_caller: src/web/render.ts:8,289 (renderDiff signature param) — used in production render path
+    classification: production-wired (type)
+  - symbol: StepDiff
+    pillar_a: WEAK
+    production_caller: none directly in adapters; used only inside src/core/diffRuns.ts:19,27,53,66 and reachable via RunDiff.steps
+    classification: export-for-API — consumed structurally through RunDiff; honest call is "reachable, not directly imported by a caller". Not dead.
+  - symbol: HeaderDiff
+    pillar_a: WEAK
+    production_caller: none directly in adapters; used only inside src/core/diffRuns.ts and reachable via StepDiff.headerDiffs
+    classification: export-for-API — same as StepDiff. Not dead.
+  - symbol: scenarioKey
+    pillar_a: PASS
+    production_caller: src/mcp/server.ts:22 (pruneAfterPersist) — real production caller; also internal in runHistory.ts:64,66,83
+    pillar_b: PASS — src/core/runHistory.test.ts + m5-e2e.test.ts
+    classification: production-wired
+  - symbol: findPreviousRun
+    pillar_a: PASS
+    production_caller: src/web/server.ts:110 (GET /runs/:id/diff route) — real production caller; also m5-e2e.test.ts
+    pillar_b: PASS — src/core/runHistory.test.ts (4 cases exercise it via real runs/ dir)
+    classification: production-wired
+  - symbol: pruneRunHistory
+    pillar_a: PASS
+    production_caller: src/mcp/server.ts:22 via pruneAfterPersist, invoked at server.ts:75 (run_request) AND :107 (run_scenario) — real production callers, NOT dead branches
+    pillar_b: PASS — src/core/runHistory.test.ts (4 cases) + m5-e2e.test.ts exercise on real runs/ dir
+    pillar_c: WEAK — see F-wire-1 (success path not observable)
+    classification: production-wired
+  - symbol: defaultHistoryLimit
+    pillar_a: WEAK
+    production_caller: none external; used only as default param inside runHistory.ts:79,82 + re-exported on public API
+    classification: export-for-API — internal default-param helper, exposed for callers who want the configured limit. Not dead, but no current external consumer.
+
+integration_with_existing_flows:
+  status: PASS
+  notes: |
+    Both new flows trace cleanly from a real entry point:
+      MCP entry (run_request / run_scenario tools) → persistRun → pruneAfterPersist → scenarioKey + pruneRunHistory.
+      HTTP entry (GET /runs/:id/diff) → loadRun → findPreviousRun → diffRuns → renderDiff.
+    The diff route is also discoverable by the user: src/web/render.ts:217 adds an
+    "<a href=/runs/{id}/diff>ver diff vs anterior</a>" link on the run page — no orphan route.
+    No new module is unreachable from an entry point.
+
+dead_exports:
+  status: PASS_WITH_NOTE
+  notes: |
+    knip reports many "unused exports" on src/core/index.ts, but index.ts IS the deliberate
+    public API / DIP boundary (documented in the file header). Per wiring.md §3, an export is
+    wired if re-exported via index OR used internally. All M5 exports satisfy this.
+    StepDiff, HeaderDiff, defaultHistoryLimit are export-for-API (no external caller yet) —
+    honestly classified, NOT dead. No M5 export is unreachable or a no-op.
+
+boundary_respect_dip:
+  status: PASS
+  notes: |
+    src/core/ has NO import from ../web or ../mcp (verified — Global DoD grep empty).
+    Adapters import only from ../core/index.js. runHistory.ts depends on node:crypto + node:fs
+    (stdlib) + sibling core modules only. DIP preserved.
+
+concurrent_safety:
+  status: PASS_WITH_NOTE
+  notes: |
+    pruneRunHistory does read-then-rm on runs/ (read-modify-delete) and the diff route does
+    read-then-read. Concurrent prune + diff on the same scenario could rm a run that
+    findPreviousRun just selected → diffRuns would never see it (the route reads curr first,
+    then prev; rm of prev mid-flight yields a benign "first run" message, not a crash).
+    rm uses { force: true } so a double-delete is a no-op. Plan declares last-write-wins
+    accepted (T2.1 Concurrency note), consistent with M2/M3. No data corruption; acceptable
+    for the local single-process MVP. Logged here for the record, not blocking.
+
+findings:
+  - id: F-wire-1
+    severity: HIGH
+    file: src/core/runHistory.ts
+    line: 76
+    plan_ref: T2.1 wiring triad pillar c "runs/ podado" + ADR D5 (risco #2 retenção)
+    summary: >
+      Retention (pruneRunHistory) has NO observable success signal in production. The MCP
+      wrapper pruneAfterPersist (mcp/server.ts:20-26) logs only the FAILURE path
+      ("prune_failed"); when prune succeeds and deletes N old runs, nothing is emitted to
+      stderr. Pillar (c) for the retention feature is therefore not honestly satisfied in a
+      real workload — ops cannot see retention working (or silently NOT deleting because a
+      run is verdict-pinned). The implementation summary claims pillar (c) = "runs/ podado",
+      but that is only observable in the test by reading the directory, never in production.
+    evidence: |
+      src/mcp/server.ts:20-26  pruneAfterPersist → only console.error on catch.
+      src/core/runHistory.ts:76-89 pruneRunHistory returns void; no count, no log of how many
+      runs were removed or pinned.
+      Contrast: run_request/run_scenario DO emit structured stderr metrics (server.ts:78, 109).
+      The retention metric (the one risk #2 of the ROADMAP is about) is the one left silent.
+    recommended_action: >
+      Have pruneRunHistory return the count of removed + pinned runs (or accept a logger), and
+      have pruneAfterPersist emit a structured stderr line on the success path, e.g.
+      {"event":"prune","scenarioKey":...,"removed":N,"pinned":M,"kept":K}. This makes the
+      retention behavior auditable in production and closes pillar (c) honestly.
+
+  - id: F-wire-2
+    severity: LOW
+    file: src/core/index.ts
+    line: 59
+    plan_ref: T2.1 — exports of runHistory
+    summary: >
+      defaultHistoryLimit is exported on the public API but has no external production caller —
+      it is used only as a default-param value inside runHistory.ts. This is acceptable as an
+      export-for-API affordance (callers can read the configured limit), but it is the only M5
+      export with neither an external caller nor a public type consumer. Flagged for honesty,
+      not blocking.
+    evidence: |
+      grep "defaultHistoryLimit" src/ excluding runHistory.ts + index.ts → empty.
+    recommended_action: >
+      Keep if you intend the limit to be programmatically queryable; otherwise consider not
+      re-exporting it (it remains usable internally as the default param). No action required
+      for this milestone.
+
+blocker_count: 0
+high_count: 1
+medium_count: 0
+low_count: 2   # F-wire-2 + concurrent_safety note
+verdict_recommendation: READY_TO_MERGE
+verdict_notes: >
+  No BLOCKER. One HIGH (F-wire-1: retention success path is not observable — pillar c gap on
+  the very feature ROADMAP risco #2 targets). Per cycle-review, ≤2 HIGH with documented
+  mitigation is compatible with READY_TO_MERGE; recommend addressing F-wire-1 (a ~3-line
+  stderr log) before release since retention is a stated milestone risk. All 7 production-wired
+  symbols pass the DEEP pillar-(a) check with real, non-no-op callers; no dead exports; DIP
+  intact.

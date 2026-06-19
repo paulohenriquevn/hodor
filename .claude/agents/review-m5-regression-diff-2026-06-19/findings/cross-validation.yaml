@@ -1,0 +1,166 @@
+agent: review-m5-regression-diff-cross-validation
+review_target: origin/main..develop for plan m5-regression-diff
+plan: .claude/knowledge-base/plans/m5-regression-diff-plan.md
+verdict: READY_TO_MERGE
+
+validation_chain_rerun:
+  tsc_noEmit: PASS (0 errors)
+  vitest_full_suite: PASS (31 files, 184/184 tests)
+  npm_audit: PASS (0 vulnerabilities)
+  zero_new_dep: PASS (git diff origin/main..develop -- package.json EMPTY)
+  dip_clean: PASS (no core -> web/mcp imports)
+  coverage_new_core_files:
+    maskNoise.ts: "100% lines / 75% branch"
+    diffRuns.ts: "96.15% lines / 87.5% branch"
+    runHistory.ts: "93.54% lines / 82.85% branch"
+    note: all >= 90% lines per Global DoD; aggregate 94.42% lines
+
+plan_tasks_summary:
+  total_tasks: 5            # T1.1, T1.2, T1.3, T2.1, T3.1, T4.1 (T1.1-T1.3 = 3) => actually 6 tasks
+  total_tasks_actual: 6
+  fully_implemented: 6
+  partial: 0
+  missing: 0
+  diverged: 0
+
+task_commit_status:
+  - task: T1.1 (noise? aditivo Scenario+RunEnvelope+propagacao)
+    commit: ae373d1
+    files_declared_vs_changed: "scenarioSchema.ts, runSchema.ts, runStore.ts, runScenario.ts all touched + index.ts (declared). Test in noisePropagation.test.ts (plan implied *.test.ts inline) — naming variance, NOT a divergence"
+    acceptance: MET (scenario_schema_accepts_optional_noise, run_envelope_accepts_optional_noise, run_scenario_propagates_noise_to_envelope, build_run_envelope_carries_noise all green; M0-M4 backward-compat green)
+  - task: T1.2 (maskNoise body normalization)
+    commit: ae373d1 (+ d5e3551 tsc cast fix)
+    files: "maskNoise.ts NEW, maskNoise.test.ts NEW, index.ts — all present"
+    acceptance: MET (8 tests incl nested/array/top-level-array/non-json/malformed-noop/no-mutate; sentinel '<noise>' visible)
+  - task: T1.3 (diffRuns -> RunDiff)
+    commit: ae373d1
+    files: "diffRuns.ts NEW, diffRuns.test.ts NEW, index.ts — all present"
+    acceptance: MET (8 tests incl ignores_noise_body_field, detects_real_change_even_with_noise, ignores_volatile_headers, detects_real_header_change; 2 extra tests beyond plan's 6 = added coverage)
+  - task: T2.1 (scenarioKey + findPreviousRun + pruneRunHistory + MCP wiring)
+    commit: f9e4772
+    files: "runHistory.ts NEW, runHistory.test.ts NEW, index.ts, mcp/server.ts (prune after persist) — all present"
+    acceptance: MET (9 tests; EC-1/EC-2/EC-3 each have dedicated test; corrupt-tolerant; last-N per scenario; rare scenario not evicted)
+  - task: T3.1 (GET /runs/:id/diff + renderDiff)
+    commit: b05261f
+    files: "web/server.ts, web/render.ts, web/server.test.ts, web/render.test.ts — all present"
+    acceptance: MET (404 missing, 400 malformed id EC-4, first-run message, renders-diff-vs-previous; renderDiff genuinely highlights status/headers/body; XSS escape inherited)
+  - task: T4.1 (E2E + CHANGELOG)
+    commit: 1f9195c
+    files: "m5-e2e.test.ts NEW, CHANGELOG.md — all present"
+    acceptance: MET (e2e_m5_diff_detects_real_change_ignores_noise GREEN; CHANGELOG [Unreleased] Added has M5 entry)
+
+goal_metric:
+  test_name: e2e_m5_diff_detects_real_change_ignores_noise
+  status: GREEN
+  proves_risk1: true
+  evidence: |
+    E2E line 69-71: diff of two runs differing ONLY in $.timestamp (noise) -> bodyChanged:false, hasRegression:false (noise suppressed).
+    E2E line 74-79: serverValue changed "stable-A"->"changed-B" (REAL stable-field change) -> bodyChanged:true, hasRegression:true.
+    BOTH assertions in the SAME test => normalization does NOT hide a real regression. Risk #1 empirically proven, not just asserted in prose.
+
+roadmap_dod_evidence:
+  - dod: "DoD #1 — execucoes historicas guardadas e comparaveis (anterior vs atual)"
+    evidence: "scenarioKey (name ?? sha256 {method,url}) + findPreviousRun (total order createdAt,runId). E2E line 65-66 finds prev run. runHistory.test find_previous_run_returns_immediately_prior_same_scenario (ignores other scenario in between)."
+    status: SATISFIED
+  - dod: "DoD #2 — diff (status/headers/body) computado e destacado na web app"
+    evidence: "diffRuns core (StepDiff: statusChanged/headerDiffs/bodyChanged) + renderDiff (render.ts:289 highlights all three) + GET /runs/:id/diff (server.ts:102-115). E2E line 82-85 fetches /diff and asserts 'Mudança de comportamento detectada' + 'body mudou'."
+    status: SATISFIED
+  - dod: "DoD #3 — normalizacao de volateis INCL BODY reduz falsos positivos, regras inspecionaveis"
+    evidence: "Two layers: headers/timings via normalizeRun (M3 reuse) + BODY via maskNoise w/ noise jsonpaths declared IN the scenario (noise?:string[]). Rules inspectable: visible sentinel '<noise>' (mask not delete) + noise co-located in scenario (versioned, reviewable per keploy). diff_runs_ignores_noise_body_field + E2E prove body noise suppressed."
+    status: SATISFIED
+
+risk_coverage:
+  risk1_normalization_hides_real_regression:
+    covered: true
+    mechanism: "visible sentinel '<noise>'; noise explicit/versioned in scenario; E2E proves real change detected DESPITE noise (single test asserts both noise-ignored AND real-change-caught)"
+  risk2_unbounded_run_volume:
+    covered: true
+    mechanism: "pruneRunHistory last-N per scenario (HODOR_RUN_HISTORY_LIMIT default 10), wired after persistRun in mcp/server.ts (run_request + run_scenario). E2E line 88-92 proves prune keeps last-2."
+
+must_fix_assessment:
+  EC-1_approved_run_pinned:
+    implemented: true
+    code: "runHistory.ts:85-87 — pruneRunHistory skips deletion when hasVerdict(runId) true (verdicts/{id}.json exists)"
+    test_proves_survival: true
+    test: "prune_run_history_never_deletes_approved_run (runHistory.test.ts:90-101) — a1 has verdict, is the OLDEST, limit=2; asserts a1 STILL present after prune. Genuine proof that a run WITH verdict survives pruning."
+  EC-2_limit_clamp:
+    implemented: true
+    code: "runHistory.ts:82 — Number.isInteger(limit) && limit>0 ? limit : Math.max(1, defaultHistoryLimit())"
+    test_proves: true
+    test: "prune_run_history_clamps_nonpositive_limit (limit=0 does not delete recently persisted run)"
+    note: "Non-positive/non-integer limit falls back to default 10, not literal 1. Plan T2.1 explicitly says 'default 10 p/ nao-inteiro' — IMPLEMENTATION MATCHES PLAN. defaultHistoryLimit() reads env, NaN-safe. No divergence."
+  EC-3_total_order:
+    implemented: true
+    code: "runHistory.ts:33-36 compareRuns — (createdAt, runId) tiebreak"
+    test_proves: true
+    test: "find_previous_run_breaks_createdAt_tie_deterministically — 3 runs identical createdAt, asserts deterministic prev by runId"
+  EC-4_scenarioKey_from_loaded_run:
+    implemented: true
+    code: "web/server.ts:105 RUN_ID_RE validates :id; :109-110 scenarioKey computed via findPreviousRun(curr) where curr = loadRun(id), NEVER from URL"
+    test_proves: true
+    test: "web_diff_route_400_for_malformed_id (..%2f..%2fetc -> 400) — traversal stays closed"
+
+adr_compliance:
+  total_adrs: 6
+  respected: 6
+  diverged_without_new_adr: 0
+  notes:
+    D1: "noise?:string[] optional on ScenarioSchema + RunEnvelopeSchema; schemaVersion stays 1 — confirmed backward-compat"
+    D2: "maskNoise reuses jsonpath-plus (ZERO new dep), visible '<noise>' sentinel, JSON.parse copy => no input mutation — confirmed"
+    D3: "diffRuns pure core, reuses normalizeRun + maskNoise + stableStringify, per-step status/headers/body — confirmed"
+    D4: "scenarioKey = name ?? sha256(stableStringify({method,url})) via node:crypto — confirmed"
+    D5: "pruneRunHistory last-N per scenario, env HODOR_RUN_HISTORY_LIMIT, called after persistRun — confirmed"
+    D6: "GET /runs/:id/diff SSR, findPreviousRun + diffRuns + renderDiff, first-run message, no framework — confirmed"
+
+plan_drift:
+  plan_edited_after_implement: false
+  details: "plan committed 3c45bf5 @ 16:33:56; first impl commit ae373d1 @ 16:48:06. Plan frozen before /implement started. No mid-flight edits."
+
+acceptance_criteria_summary:
+  total: 6   # one Acceptance block per task
+  satisfied: 6
+  unverified: 0
+  false_claims: 0
+
+findings:
+  - id: F-xval-1
+    severity: LOW
+    file: src/core/noisePropagation.test.ts
+    plan_ref: T1.1 "Files to edit ... + *.test.ts"
+    summary: "T1.1 TDD tests live in a dedicated noisePropagation.test.ts rather than inline *.test.ts next to each schema. Naming variance only — all three plan RED tests (scenario/run_envelope/run_scenario_propagates) are present and green. No behavioral divergence; no ADR needed."
+    evidence: |
+      Plan listed RED tests scenario_schema_accepts_optional_noise / run_envelope_accepts_optional_noise / run_scenario_propagates_noise_to_envelope.
+      All present in noisePropagation.test.ts (lines 24,31,41) + bonus build_run_envelope_carries_noise (37). 184/184 green.
+    recommended_action: "None required. Note for documentation completeness only."
+
+  - id: F-xval-2
+    severity: INFO
+    file: src/core/diffRuns.test.ts
+    plan_ref: T1.3 TDD (plan listed 6 RED tests)
+    summary: "T1.3 ships 8 tests vs the 6 in the plan — adds diff_runs_detects_real_change_even_with_noise and diff_runs_flags_step_count_mismatch. This is additive coverage (anti-flaky proof + step-count edge), not scope creep; both map to existing RunDiff fields (stepCountChanged)."
+    evidence: "diffRuns.ts:64 stepCountChanged + diffRuns.test.ts:50,70. Strengthens Risk #1 coverage at unit level."
+    recommended_action: "None — accept as beneficial."
+
+  - id: F-xval-3
+    severity: INFO
+    file: src/core/runHistory.ts
+    plan_ref: T2.1 EC-2 clamp
+    summary: "EC-2 clamp on non-positive/non-integer limit falls back to defaultHistoryLimit() (10), not literal 1. This MATCHES the plan text 'clamp Math.max(1,…) (default 10 p/ nao-inteiro)'. Verified not a divergence — flagged only to make the semantics explicit for reviewers who read 'Math.max(1,…)' literally."
+    evidence: "runHistory.ts:82; plan T2.1 line 216 'clamp Math.max(1, …) (default 10 p/ nao-inteiro)'. Test prune_run_history_clamps_nonpositive_limit confirms recently-persisted run is never deleted."
+    recommended_action: "None — plan and code agree."
+
+blockers: []
+high: []
+summary: |
+  Cross-validation PASS. All 6 tasks (T1.1, T1.2, T1.3, T2.1, T3.1, T4.1) fully implemented with
+  identifiable commits; "Files to edit" match the diffs (no scope creep, no missing files). All 7
+  Coverage-Matrix gaps resolved. All 6 ADRs (D1-D6) respected with no silent divergence. All 4
+  MUST-FIX (EC-1..EC-4) are genuinely implemented AND proven by dedicated tests — in particular
+  EC-1's prune_run_history_never_deletes_approved_run proves an approved (verdict-bearing) run
+  survives pruning even as the oldest, and maskNoise is genuine body normalization tested on
+  nested + array + top-level-array paths. The Goal metric e2e_m5_diff_detects_real_change_ignores_noise
+  is GREEN and empirically proves Risk #1 (a real change is caught DESPITE noise suppression in the
+  same test). Risk #2 (retention) covered by pruneRunHistory + E2E. Re-ran the full chain on develop:
+  tsc 0 errors, 184/184 tests, npm audit 0 vulns, ZERO new dependency, DIP clean, new-core coverage
+  >= 90% lines. No plan drift (plan frozen 15min before first impl commit). Only 3 findings, all
+  LOW/INFO documentation/naming notes — no BLOCKER, no HIGH.

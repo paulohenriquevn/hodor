@@ -1,0 +1,107 @@
+agent: review-m6-golden-gate-domain-security
+review_target: main..HEAD for plan m6-golden-gate
+domain: security
+domain_specific_patterns_checked:
+  - "path-traversal containment on run/draft/golden I/O (RUN_ID_RE + RunEnvelopeSchema.runId path-safe regex + SAFE_ID_RE)"
+  - "EC-4: ?vs=golden scenarioKey derived from LOADED run, never from URL; vs only string-compared, never path-joined"
+  - "SSRF threat model for agent-controlled URLs (check_scenario / run_scenario parity)"
+  - "drafts/ commitable + replaySuite auto re-execution = arbitrary outbound request amplification"
+  - "credential redaction chain: raw run → runs/ (gitignored) → golden+approved → reviews/ (M3 redacts)"
+  - "no tool writes verdict (human-only approver invariant preserved)"
+
+summary: >
+  M6 preserva todas as defesas de path-traversal e de redação herdadas de M3/M4/M5,
+  e NÃO reabre nenhum vetor de traversal na rota ?vs=golden (EC-4 corretamente honrado:
+  o scenarioKey vem do run carregado, nunca da URL; `vs` só é comparado a "golden",
+  nunca usado em path). A cadeia de redação de credenciais está íntegra: o run cru
+  persistido por check_scenario vai para runs/ (gitignored), e só vira artefato
+  commitável via reviews/ (M3) que redige. O único risco NOVO e material do M6 é o
+  item (4): `replaySuite` itera `drafts/` (COMMITÁVEL via git) e RE-EXECUTA cada draft
+  automaticamente — um draft malicioso commitado por um terceiro (PR, branch comprometida)
+  faz `replay_suite` disparar requests HTTP arbitrários a partir de conteúdo do repo,
+  sem nova confirmação humana. Isto AMPLIA o SSRF do M1 (antes: o agente confiável
+  controla a URL no momento da chamada; agora: conteúdo persistido no repo por qualquer
+  contribuidor é re-executado por quem rodar o gate). Avalio como HIGH (não BLOCKER):
+  o threat model declarado é local single-user e o draft já valida URL na fronteira,
+  mas a transição de "URL no momento da chamada pelo agente confiável" para "URL
+  persistida em arquivo commitável re-executada automaticamente" é uma mudança real de
+  superfície que o plano não enderaçou explicitamente.
+
+findings:
+  - id: F-dom-sec-1
+    severity: HIGH
+    file: src/core/replaySuite.ts
+    line: 45
+    plan_ref: "ADR D3 — Catálogo da suíte = listDrafts ∩ golden; risco #2 (re-execução real)"
+    domain_anchor: "CLAUDE.md §8 (fail-fast/trust boundaries) + threat model local single-user declarado no plano (risco #2) + .gitignore (drafts/ COMMITÁVEL por design)"
+    summary: >
+      replaySuite re-executa AUTOMATICAMENTE todo draft commitável em drafts/ contra a
+      rede. Como drafts/ é versionado no git (por design M4), um draft malicioso
+      introduzido por terceiro (PR, merge, branch comprometida) faz `replay_suite`
+      emitir requests HTTP arbitrários a partir de conteúdo do repositório — sem
+      confirmação humana no momento do replay. É uma amplificação do SSRF do M1: a URL
+      deixa de ser controlada pelo agente confiável NO MOMENTO da chamada e passa a ser
+      conteúdo persistido por qualquer contribuidor, re-executado pelo gate.
+    evidence: |
+      ```ts
+      // replaySuite.ts:45-51 — itera TODO draft de drafts/ (commitável) e executa
+      for (const id of await listDrafts(draftsDir)) {
+        const draft = await loadDraft(id, draftsDir);
+        if (draft === null) continue;
+        report.total += 1;
+        try {
+          status = (await checkScenario(draft, { ... })).status; // <-- runScenario → fetch(url)
+      ```
+      ```
+      # .gitignore — runs/ e verdicts/ são ignorados; drafts/ é INTENCIONALMENTE commitável
+      runs/
+      verdicts/
+      # NOTA (M4): `drafts/` ... é COMMITÁVEL por design ... NÃO ignorar.
+      ```
+      DraftSchema valida que a url é "URL absoluta ou template", mas NÃO restringe
+      destino (qualquer host: 169.254.169.254 metadata, localhost:admin-ports, intranet).
+    recommended_action: >
+      Aceitar formalmente o risco via nota explícita no plano/CHANGELOG §Security
+      ("replay_suite re-executa drafts commitáveis; rode-o apenas sobre drafts/ confiáveis;
+      um draft commitado por terceiro = execução de requests arbitrários — revise drafts
+      em PR antes de rodar o gate"), espelhando a honestidade do teto sem-auth já declarado.
+      Mitigação técnica de baixo custo (opcional, NÃO bloqueante p/ este merge): um
+      allowlist de hosts opt-in via env (ex. HODOR_REPLAY_HOST_ALLOWLIST) consultado em
+      checkScenario/executeRequest — fora de escopo do M6, candidato a M7 (env/secrets já
+      toca a fronteira de rede). Mínimo exigido agora: documentar o vetor; não deixá-lo
+      implícito.
+
+  - id: F-dom-sec-2
+    severity: LOW
+    file: src/mcp/server.ts
+    line: 176
+    plan_ref: "ADR D4 — check_scenario re-roda + persiste run novo"
+    domain_anchor: "Mesmo threat model de run_scenario (M1): agente é o Claude confiável"
+    summary: >
+      A tool check_scenario expande a superfície SSRF do M1 para um segundo ponto de
+      entrada (o agente pode disparar fetch a host arbitrário via check_scenario, não só
+      via run_scenario). Sob o threat model declarado (agente = Claude confiável, rede
+      local) é ACEITÁVEL e consistente com M1 — registro apenas para rastreabilidade,
+      não como defeito. O risco amplificado real está em F-dom-sec-1 (conteúdo de repo,
+      não chamada do agente).
+    evidence: |
+      ```ts
+      // server.ts:175-177 — agente fornece o Scenario (inclui url); core faz fetch()
+      async (scenario) => {
+        const { status, diff, run } = await checkScenario(scenario);
+        const path = await persistRun(run);
+      ```
+    recommended_action: >
+      Nenhuma ação exigida — consistente com run_scenario M1. Se um futuro allowlist de
+      host for adotado (F-dom-sec-1), aplicá-lo uniformemente a run_scenario + check_scenario
+      + replay_suite na fronteira executeRequest (DRY — um único ponto de enforcement).
+
+clean_checks:
+  - check: "Web /diff?vs=golden — :id validado por RUN_ID_RE antes do path-join (server.ts:107); scenarioKey de curr CARREGADO, nunca da URL (server.ts:115); vs só comparado a 'golden', nunca em path. EC-4 honrado — NÃO reabre traversal."
+    verdict: PASS
+  - check: "findGoldenRun / checkScenario / replaySuite I/O — runId vem de RunEnvelopeSchema (regex path-safe runSchema.ts:57); loadAllRuns valida cada run via schema; draftId de listDrafts vem de readdir + SAFE_ID_RE; rm da poda tem defense-in-depth resolve().startsWith() (runHistory.ts:127). Nenhum path novo a partir de conteúdo não-validado."
+    verdict: PASS
+  - check: "Redação de credenciais — run cru de check_scenario vai p/ runs/ (gitignored, efêmero) sem redação (OK); se aprovado→golden, o artefato commitável é reviews/ (M3) que redige via normalizeRun. listagem web só lê runs/ efêmero. Cadeia íntegra."
+    verdict: PASS
+  - check: "Invariante humano-único-aprovador — nem check_scenario nem replay_suite gravam verdict; saveVerdict só na rota POST /runs/:id/verdict (humano). Preservado."
+    verdict: PASS

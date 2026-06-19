@@ -1,0 +1,176 @@
+agent: review-m5-regression-diff-domain-security
+review_target: main..HEAD for plan m5-regression-diff
+domain: security
+domain_specific_patterns_checked:
+  - "path-traversal on GET /runs/:id/diff (RUN_ID_RE allowlist; scenarioKey from loaded run, not URL — EC-4)"
+  - "path-traversal in pruneRunHistory/findPreviousRun rm/join (runId from file CONTENT, validated only by z.string().min(1))"
+  - "XSS escaping in renderDiff (header keys/values, runIds, names)"
+  - "prototype pollution in maskNoise (jsonpath $.__proto__.x and node.parent[node.parentProperty])"
+  - "jsonpath-plus no-eval/no-script inheritance in maskNoise"
+  - "noise sentinel <noise> safety"
+  - "DoS via unbounded diff/body size"
+
+empirical_tests_run:
+  - test: "maskNoise prototype pollution via path $.__proto__.polluted"
+    result: "NO pollution — jsonpath-plus does not traverse into the real prototype of a plain object; path matches nothing; ({}).polluted stays undefined"
+  - test: "maskNoise with body containing own-enumerable __proto__ key + path $.__proto__.x"
+    result: "NO global pollution — JSON.parse materializes __proto__ as an OWN property (not the prototype); masking touches only that own key; ({}).x stays undefined"
+  - test: "maskNoise path $.a.constructor — Object.prototype tampering"
+    result: "NO tampering — Object.prototype.toString unchanged"
+  - test: "rm(join('runs', '../secret/etc' + '.json')) with runId='../secret/etc'"
+    result: "TRAVERSAL CONFIRMED — file at runs/../secret/etc.json (i.e. secret/etc.json, OUTSIDE runs/) was DELETED"
+
+findings:
+  - id: F-dom-sec-1
+    severity: HIGH
+    file: src/core/runHistory.ts
+    line: 87
+    plan_ref: ADR D5 — pruneRunHistory last-N por cenário; Baseline "runId validado por z.string().min(1) — não path-safe"
+    domain_anchor: "rules/architecture.md §2 (validação na fronteira); M2 EC-1 estabeleceu RUN_ID_RE como allowlist anti-traversal para o MESMO componente (runId→path)"
+    summary: >
+      pruneRunHistory faz rm(join(dir, `${run.runId}.json`), {force:true}) onde run.runId vem do
+      CONTEÚDO do arquivo (RunEnvelopeSchema.parse em loadAllRuns), validado APENAS por z.string().min(1)
+      — NÃO é path-safe. Um run-file cujo conteúdo tenha "runId":"../../x" produz rm de
+      runs/../../x.json, ESCAPANDO o diretório runs/. Empiricamente confirmado: rm com runId
+      "../secret/etc" apagou um arquivo fora de runs/. O M2 fechou exatamente esta classe na FRONTEIRA
+      WEB (RUN_ID_RE sobre o :id da URL), mas o core runHistory reintroduziu o gap ao derivar o path de
+      um runId NÃO validado contra path-safety vindo do conteúdo. force:true silencia o erro,
+      tornando a exclusão arbitrária ainda mais furtiva.
+    evidence: |
+      ```ts
+      // runHistory.ts:51 — runId vem do conteúdo, validado só por z.string().min(1)
+      runs.push(RunEnvelopeSchema.parse(JSON.parse(await readFile(join(dir, entry), "utf8"))));
+      ...
+      // runHistory.ts:87 — rm com runId derivado do conteúdo, sem allowlist path-safe
+      await rm(join(dir, `${run.runId}.json`), { force: true });
+      ```
+      ```
+      # runSchema.ts:54
+      runId: z.string().min(1),   // NÃO impede "../", "/", separadores
+      ```
+      PoC (node): join("runs","../secret/etc.json") -> rm apagou secret/etc.json (fora de runs/).
+    threat_model_note: >
+      Vetor de gravação em runs/ NÃO é o MCP run_request/run_scenario (esses geram runId via
+      randomUUID — não atacável). O risco é defense-in-depth: (a) qualquer processo/agente que
+      consiga dropar um .json em runs/ (dir efêmero, gitignored, sem ACL) controla o alvo do rm;
+      (b) qualquer caller FUTURO de buildRunEnvelope/persistRun que aceite runId externo reabre o
+      buraco; (c) viola o princípio (já adotado no M2) de NUNCA fazer join() de um componente de
+      path não-validado. Severidade HIGH (não BLOCKER) porque o vetor de entrada hoje é restrito,
+      mas a exclusão arbitrária de arquivo via traversal é uma falha de segurança concreta e
+      empiricamente reproduzida.
+    recommended_action: >
+      Validar runId como path-safe ANTES de qualquer join/rm. Duas mitigações combináveis:
+      (1) Promover RUN_ID_RE (hoje em web/server.ts) para o core (ex.: runSchema RunIdSchema =
+      z.string().regex(/^[0-9a-f-]{36}$/i)) e aplicá-la no RunEnvelopeSchema.runId — fecha na
+      fronteira de desserialização para TODOS os callers. (2) Em pruneRunHistory, antes do rm,
+      assert que basename(join(dir, runId+'.json')) está dentro de dir (path.resolve + startsWith) e
+      pular (com console.error) qualquer runId que não case a allowlist — em vez de force:true mudo.
+      Adicionar teste de regressão: run-file com runId "../x" NÃO causa rm fora de runs/.
+
+  - id: F-dom-sec-2
+    severity: MEDIUM
+    file: src/core/runHistory.ts
+    line: 51
+    plan_ref: ADR D4 — scenarioKey/findPreviousRun lêem runs/
+    domain_anchor: "rules/architecture.md §2 — validação na fronteira de desserialização"
+    summary: >
+      Mesma raiz do F-dom-sec-1 (runId não path-safe vindo do conteúdo), mas no caminho de LEITURA.
+      findPreviousRun/loadAllRuns leem via readdir(dir)+join(dir, entry) — aqui o componente de path é
+      o FILENAME do readdir (não o runId do conteúdo), então a leitura em si NÃO traversa. Porém o
+      runId não-path-safe propaga para diffRuns/render (ex.: compareRuns usa runId; renderDiff exibe
+      curr.runId/prev.runId). Não há traversal de leitura, mas a falta de allowlist de runId é a mesma
+      dívida estrutural; corrigi-la no schema (F-dom-sec-1 mitigação 1) resolve os dois de uma vez.
+    evidence: |
+      ```ts
+      // loadAllRuns: o path de leitura usa `entry` (filename do readdir), não o runId do conteúdo —
+      // por isso a LEITURA não escapa. O risco é o runId não-validado fluir adiante.
+      for (const entry of entries) {
+        if (!entry.endsWith(".json")) continue;
+        runs.push(RunEnvelopeSchema.parse(JSON.parse(await readFile(join(dir, entry), "utf8"))));
+      }
+      ```
+    recommended_action: >
+      Cobrir com a mesma allowlist de runId no schema (mitigação 1 do F-dom-sec-1). Sem ação
+      adicional aqui se o schema for endurecido.
+
+  - id: F-dom-sec-3
+    severity: INFO
+    file: src/core/maskNoise.ts
+    line: 31
+    plan_ref: ADR D2 — maskNoise muta node.parent[node.parentProperty]
+    domain_anchor: "prototype-pollution (CWE-1321); evalCapture 'sem eval/script'"
+    summary: >
+      VERIFICADO SEGURO (não é finding acionável — registrado como due-diligence). Testei
+      prototype pollution via maskNoise: (a) path $.__proto__.polluted NÃO polui Object.prototype
+      (jsonpath-plus não desce no prototype real de objeto plano — match vazio); (b) body com chave
+      própria "__proto__" + path $.__proto__.x muta só a propriedade OWN materializada pelo
+      JSON.parse, sem efeito global; (c) $.a.constructor não adultera Object.prototype. A mutação
+      node.parent[parentProperty]="<noise>" é uma atribuição de string sobre nós retornados pelo
+      jsonpath sobre json = JSON.parse(body) (cópia própria; input string nunca mutado). maskNoise
+      herda o no-eval/no-script do jsonpath-plus (não usa sandbox/script-expr). Sentinela "<noise>"
+      é string literal — re-serializada via JSON.stringify, escapada no render.
+    evidence: |
+      PoC node executado: ({}).polluted e ({}).x permanecem undefined após maskNoise com
+      $.__proto__.*; Object.prototype.toString inalterado após $.a.constructor.
+    recommended_action: >
+      Nenhuma ação obrigatória. Defesa opcional (defense-in-depth, baixo custo): pular explicitamente
+      parentProperty ∈ {"__proto__","constructor","prototype"} no laço de mutação, documentando a
+      intenção. Não bloqueia o merge.
+
+  - id: F-dom-sec-4
+    severity: INFO
+    file: src/web/render.ts
+    line: 307
+    plan_ref: ADR D6 — renderDiff escapa todo conteúdo dinâmico (anti-XSS herdado M2)
+    domain_anchor: "rules/public-copy.md n/a; M2 F-sec-1 (escapeHtml inclui aspas simples)"
+    summary: >
+      VERIFICADO SEGURO. renderDiff escapa TODO conteúdo dinâmico: header keys/values
+      (escapeHtml(h.key)/escapeHtml(h.prev??...)/escapeHtml(h.curr??...)), curr.runId/prev.runId,
+      curr.name/title, contagem de steps (numérica). Não há interpolação de conteúdo dinâmico
+      bruto. Um headerDiff com valor "<script>" é escapado para &lt;script&gt;. As únicas strings
+      não escapadas são literais estáticos do template ("status mudou","body mudou","—",
+      "(ausente)"). escapeHtml cobre & < > " ' (M2 F-sec-1). XSS não reproduzível.
+    evidence: |
+      ```ts
+      .map((h) => `<code>${escapeHtml(h.key)}</code>: ${escapeHtml(h.prev ?? "(ausente)")} → ${escapeHtml(h.curr ?? "(ausente)")}`)
+      ...
+      <p class='meta'>atual <code>${escapeHtml(curr.runId)}</code> vs anterior <code>${escapeHtml(prev.runId)}</code></p>
+      ```
+    recommended_action: "Nenhuma — escaping completo e consistente com M2."
+
+  - id: F-dom-sec-5
+    severity: INFO
+    file: src/web/server.ts
+    line: 105
+    plan_ref: EC-4 — :id permanece UUID-validado; scenarioKey computado APÓS loadRun, nunca da URL
+    domain_anchor: "M2 EC-1 (RUN_ID_RE anti-traversal na fronteira web)"
+    summary: >
+      VERIFICADO SEGURO. A rota GET /runs/:id/diff valida :id com RUN_ID_RE (UUID) ANTES de montar
+      o path (r400 "bad id" se não casar) e ANTES de checar o método. O loadRun usa join(dir,
+      `${id}.json`) com id já allowlisted. scenarioKey é derivado de `curr` (run carregado via
+      findPreviousRun→scenarioKey(curr)), NUNCA da URL. Não há caminho onde a URL controle um path
+      além do :id UUID-validado. EC-4 respeitado — o traversal fechado em M2/M4 não foi reaberto na
+      camada web. (O traversal REAL do M5 está no core runHistory — F-dom-sec-1 — não na rota web.)
+    evidence: |
+      ```ts
+      const id = diffMatch[1]!;
+      if (!RUN_ID_RE.test(id)) return r400("bad id"); // EC-4
+      const curr = await loadRun(join(dir, `${id}.json`));
+      const prev = await findPreviousRun(curr, dir); // scenarioKey(curr) — do run, não da URL
+      ```
+    recommended_action: "Nenhuma na camada web."
+
+summary_counts:
+  BLOCKER: 0
+  HIGH: 1
+  MEDIUM: 1
+  INFO: 3
+
+verdict_recommendation: NEEDS_FIXES
+rationale: >
+  Um finding HIGH (F-dom-sec-1) — path-traversal arbitrário no rm de pruneRunHistory via runId não
+  path-safe vindo do conteúdo do arquivo, EMPIRICAMENTE confirmado (apagou arquivo fora de runs/).
+  É a mesma classe que o M2 fechou na fronteira web, reaberta no core. Vetor de entrada hoje
+  restrito (runId gerado por randomUUID nas tools), mas a correção é barata e estrutural (allowlist
+  de runId no schema) e fecha F-dom-sec-2 junto. Demais áreas (maskNoise prototype pollution,
+  renderDiff XSS, rota /diff traversal/EC-4) foram testadas e estão SEGURAS.

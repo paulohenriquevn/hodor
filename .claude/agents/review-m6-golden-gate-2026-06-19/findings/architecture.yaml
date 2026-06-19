@@ -1,0 +1,180 @@
+agent: review-m6-golden-gate-architecture
+review_target: origin/main..develop for plan m6-golden-gate
+plan: .claude/knowledge-base/plans/m6-golden-gate-plan.md
+rules_read:
+  - .claude/rules/architecture.md
+  - .claude/knowledge-base/plans/m6-golden-gate-plan.md
+summary: >
+  DIP boundary is clean (grep 'from "../web"|from "../mcp"' over src/core/ is empty).
+  SRP is respected — findGoldenRun lives in runHistory next to its sibling
+  findPreviousRun; checkScenario and replaySuite are separate single-purpose core
+  modules; the two MCP tools are thin adapters that delegate to the core, persist
+  the new run, and never write a verdict (humano = único aprovador, DoD respected).
+  Reuse-without-refactor is genuine: checkScenario composes runScenario + findGoldenRun
+  + diffRuns; replaySuite composes listDrafts + checkScenario; ZERO new dependency.
+  ADRs D1-D6 are implemented as described. One real HIGH: the web listing computes
+  findGoldenRun per-run, and findGoldenRun re-reads + re-parses the ENTIRE runs dir
+  each call → O(N^2) disk reads on GET /. The ScenarioIdentity widening is a sound,
+  minimal structural-typing generalization (not accidental coupling). replaySuite
+  re-running every scenario sequentially is an accepted, documented design (D3/D5).
+
+findings:
+  - id: F-arch-1
+    severity: HIGH
+    file: src/web/server.ts
+    line: 259
+    plan_ref: T5.1 / ADR D6 — "listagem marca (best-effort) runs que regridem vs golden"
+    summary: >
+      GET / listing is O(N^2) in disk reads — findGoldenRun re-reads and re-parses
+      the entire runs directory once per listed run.
+    evidence: |
+      listRuns iterates every run file and, inside the loop, calls:
+      ```ts
+      const golden = await findGoldenRun(scenarioKey(env), dir, verdictsDir);
+      ```
+      findGoldenRun (runHistory.ts:88) does on EVERY call:
+      ```ts
+      const ofScenario = (await loadAllRuns(dir)).filter(...).sort(compareRuns);
+      ```
+      loadAllRuns readdir's `dir` and JSON.parse's every *.json. For N runs the
+      listing therefore performs N full directory scans + N*N parses, plus a
+      loadVerdict per candidate. The plan acknowledges only "um diff por run"
+      (Drawbacks table, "Listagem marcar regressão custa um diff por run") — it
+      does NOT account for the full-directory re-read hidden inside findGoldenRun.
+      "volume local bounded pela retenção M5" caps each scenario to ~10 runs, but
+      retention is per-scenario; with K distinct scenarios the runs dir holds ~10*K
+      files and the listing is O((10*K)^2). This is a latent scaling cliff in the
+      one path a human hits most (the dashboard home page).
+    recommended_action: >
+      Hoist a single loadAllRuns(dir) outside the listRuns loop and pass the
+      pre-loaded run set (grouped by scenarioKey) into the regression computation,
+      or add an internal findGoldenRunIn(runs, key, verdictsDir) helper that accepts
+      already-loaded runs (mirrors how loadAllRuns/compareRuns were already extracted
+      as internal helpers in T1.1). This removes the N^2 without changing the public
+      API or any verdict semantics.
+
+  - id: F-arch-2
+    severity: INFO
+    file: src/core/runHistory.ts
+    line: 27
+    plan_ref: ADR D1 — "findGoldenRun generaliza findPreviousRun"
+    summary: >
+      Widening scenarioKey to the structural ScenarioIdentity interface (accepts both
+      RunEnvelope and Scenario) is a sound minimal generalization, NOT accidental
+      coupling.
+    evidence: |
+      ```ts
+      export interface ScenarioIdentity {
+        name?: string;
+        steps: ReadonlyArray<{ request: { method: string; url: string } }>;
+      }
+      export function scenarioKey(env: ScenarioIdentity): string { ... }
+      ```
+      The function never depended on anything RunEnvelope-specific — it only reads
+      `name` and `steps[].request.{method,url}`. The interface captures exactly the
+      minimal shape it always consumed; both RunEnvelope and Scenario satisfy it
+      structurally with no nominal coupling, no inheritance, no new dependency
+      direction. This is the right call for replaySuite, which must compute the key
+      from a Draft/Scenario (spec) before any run exists. It honors ISP (consumers
+      depend on the smallest shape) and architecture.md §3 (minimize the surface).
+      No change recommended.
+
+  - id: F-arch-3
+    severity: INFO
+    file: src/core/replaySuite.ts
+    line: 51
+    plan_ref: ADR D3/D5 — "replaySuite itera o catálogo e roda checkScenario por item"
+    summary: >
+      replaySuite re-running each scenario via checkScenario (N live HTTP executions
+      in sequence) is an accepted, explicitly-documented design — not a defect.
+    evidence: |
+      ```ts
+      status = (await checkScenario(draft, { deps: options.deps, runsDir, verdictsDir })).status;
+      ```
+      Each item re-executes the scenario live (D2 rationale: the golden's captures
+      are stale, so pure-replay would emit false 401s). The plan documents the
+      sequential choice and defers parallelization explicitly: Concurrency tests
+      "(none — single-threaded; cenários rodados em sequência — paralelização é
+      M-futuro)". The try/catch isolation (EC-1) correctly prevents one downed
+      target from aborting the suite, and allOk = regression===0 && error===0 is
+      consistent with D5. For a local single-operator V2 gate this is appropriate
+      (KISS/YAGNI); a TODO/ADR pointer to future parallelization would be a nicety
+      but is already covered by the plan. No change required now.
+
+  - id: F-arch-4
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 169
+    plan_ref: ADR D4 — "core puro + 2 tools finas; o adaptador persiste o run novo"
+    summary: >
+      Persisting the new run in the MCP adapter (not in core checkScenario) is the
+      correct separation — core stays pure, the adapter owns I/O side effects.
+    evidence: |
+      checkScenario (checkScenario.ts) returns {status, diff, run} and never writes;
+      the adapter performs persistence:
+      ```ts
+      const { status, diff, run } = await checkScenario(scenario);
+      const path = await persistRun(run); // o run novo entra no histórico p/ revisão
+      await pruneAfterPersist(run);
+      ```
+      This matches architecture.md §1-§2 (logic in core, side effects at the
+      adapter/composition boundary) and is consistent with run_scenario's existing
+      shape. Crucially, neither tool calls saveVerdict — the Global DoD invariant
+      "NENHUMA tool grava verdict" holds. EC-3 is also satisfied: findGoldenRun runs
+      over already-existing runs BEFORE the adapter persists the new one, so a run is
+      never its own baseline. Correct.
+
+  - id: F-arch-5
+    severity: INFO
+    file: src/core/index.ts
+    line: 59
+    plan_ref: ADR D2 — "src/core/index.ts é a única superfície que os adaptadores importam"
+    summary: >
+      Public-surface exports for M6 are additive and minimal; the DIP boundary
+      contract is preserved.
+    evidence: |
+      New exports (scenarioKey/findGoldenRun already re-exported, plus checkScenario,
+      replaySuite and their types) are added to index.ts; adapters import only from
+      "../core/index.js". The DIP check
+      `grep -rn 'from "../web"|from "../mcp"' src/core/` returns empty (verified).
+      mcp/server.ts and web/server.ts both import exclusively from ../core/index.js.
+      core imports no adapter. Boundary intact.
+
+  - id: F-arch-6
+    severity: LOW
+    file: src/web/render.ts
+    line: 219
+    plan_ref: T5.1 / ADR D6 — "web diff vs golden"
+    summary: >
+      renderRun's "ver diff vs anterior" link is hardcoded to the M5 (vs previous)
+      diff; the golden comparison is only reachable from the listing regression badge,
+      a slight discoverability asymmetry (not a coupling/SRP defect).
+    evidence: |
+      ```ts
+      <a href="/runs/${escapeHtml(env.runId)}/diff">ver diff vs anterior</a>
+      ```
+      The run detail page never surfaces ?vs=golden; only the listing badge links to
+      it (render.ts:259). This is a UX/discoverability gap, not an architecture flaw —
+      the route and renderDiff already support both modes correctly and escaping is
+      preserved. Optional: add a second link "vs golden" on the run page for symmetry.
+    recommended_action: >
+      Optionally add a "diff vs golden" link on the run detail page for parity with
+      the regression badge. Cosmetic — does not block.
+
+  - id: F-arch-7
+    severity: INFO
+    file: src/core/checkScenario.ts
+    line: 32
+    plan_ref: ADR D2/D5 — "checkScenario orquestra run+golden+diff → status"
+    summary: >
+      checkScenario cleanly orchestrates I/O (runScenario, findGoldenRun) behind
+      injectable deps and stays free of persistence/verdict side effects — well
+      isolated.
+    evidence: |
+      The function takes CheckScenarioOptions {deps, runsDir, verdictsDir} so every
+      I/O dependency is injectable (testability per architecture.md §2 / DIP), falls
+      back to defaultRunsDir/defaultVerdictsDir only as defaults, and its body is a
+      linear compose: run = runScenario(...); golden = findGoldenRun(scenarioKey(run));
+      diff = diffRuns(golden, run). It returns data, performs no writes, and pushes
+      persistence to the caller (F-arch-4). Single responsibility: "decide regression
+      status of a fresh run vs its golden". Clean.

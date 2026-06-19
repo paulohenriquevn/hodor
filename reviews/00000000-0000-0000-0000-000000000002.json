@@ -1,0 +1,49 @@
+{
+  "artifactVersion": 1,
+  "createdAt": "2026-06-19T22:13:19.402Z",
+  "provenance": {
+    "generatedAt": "2026-06-19T22:13:19.384Z",
+    "origin": "agent-generated",
+    "sourceKind": "endpoint"
+  },
+  "runId": "00000000-0000-0000-0000-000000000002",
+  "scenarioName": "produtos-api",
+  "steps": [
+    {
+      "asserts": [
+        {
+          "actual": 500,
+          "expected": 200,
+          "op": "equals",
+          "pass": false,
+          "source": "status",
+          "value": 200
+        }
+      ],
+      "captures": {},
+      "request": {
+        "headers": {
+          "user-agent": "hodor"
+        },
+        "method": "GET",
+        "url": "http://127.0.0.1:46711/produtos"
+      },
+      "response": {
+        "body": "{\"itens\":0,\"status\":\"ERRO-estoque\"}",
+        "headers": {
+          "connection": "keep-alive",
+          "content-length": "35",
+          "content-type": "application/json",
+          "keep-alive": "timeout=5"
+        },
+        "status": 500,
+        "statusText": "Internal Server Error"
+      }
+    }
+  ],
+  "verdict": {
+    "decidedAt": "2026-06-19T22:16:41.908Z",
+    "runId": "00000000-0000-0000-0000-000000000002",
+    "verdict": "approved"
+  }
+}

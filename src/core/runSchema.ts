@@ -51,7 +51,10 @@ export const RunStepSchema = z.object({
 
 export const RunEnvelopeSchema = z.object({
   schemaVersion: z.literal(1),
-  runId: z.string().min(1),
+  // path-safe na fronteira (F-dom-sec-1): runId é usado como nome de arquivo
+  // (runs/{id}.json) e no rm da retenção — não pode conter separadores nem `..`.
+  // Fecha o traversal p/ TODOS os callers que desserializam um run do disco.
+  runId: z.string().min(1).regex(/^[A-Za-z0-9._-]+$/, "runId must be path-safe (no / or ..)"),
   createdAt: z.string(),
   // M2 (ADR D4): nome do cenário, OPCIONAL e aditivo — runs do M0/run_request
   // (sem cenário) seguem válidos; usado para rotular a listagem de review.
@@ -59,6 +62,9 @@ export const RunEnvelopeSchema = z.object({
   // M4 (ADR D2): proveniência OPCIONAL e aditiva — propagada do cenário gerado;
   // runs M0-M3 (sem ela) seguem válidos. A UI marca "gerado pelo agente · pendente".
   provenance: ProvenanceSchema.optional(),
+  // M5 (ADR D1): regras de noise (jsonpaths) propagadas do cenário — o diff lê daqui
+  // p/ mascarar o body. OPCIONAL/aditivo — runs M0-M4 (sem ela) seguem válidos.
+  noise: z.array(z.string()).optional(),
   steps: z.array(RunStepSchema).min(1),
 });
 

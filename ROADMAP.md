@@ -159,17 +159,19 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
-### M4 — [ ] Geração de cenários assistida pelo agente
+### M4 — [x] Geração de cenários assistida pelo agente
 
 **Objective:** Dar ao agente tools MCP para *propor* cenários a partir de um endpoint ou de uma especificação, acelerando a autoria — sempre com revisão humana.
 
 **Definition of done:**
 
-- [ ] Tool MCP que, dado um endpoint (ou OpenAPI/curl de exemplo), o agente gera um cenário candidato (steps + asserts) como rascunho não-aprovado.
-- [ ] Cenários gerados entram no mesmo fluxo de revisão (M2/M3) marcados como "gerado pelo agente, pendente de revisão".
-- [ ] O humano consegue editar/refinar um cenário gerado antes de aprovar.
+- [x] Tool MCP que, dado um endpoint (ou OpenAPI/curl de exemplo), o agente gera um cenário candidato (steps + asserts) como rascunho não-aprovado.
+- [x] Cenários gerados entram no mesmo fluxo de revisão (M2/M3) marcados como "gerado pelo agente, pendente de revisão".
+- [x] O humano consegue editar/refinar um cenário gerado antes de aprovar.
 
 **Dependencies:** M1, M2, M3.
+
+**Delivered:** v0.5.0 (2026-06-19, PR #5). Tool MCP `save_scenario_draft` — o agente monta o `Scenario` (de endpoint/curl/OpenAPI) e a tool valida (zod) + persiste como rascunho não-aprovado em `drafts/{id}.json` commitável (humano edita no git antes de aprovar). Proveniência aditiva (`provenance`) propaga `Scenario → RunEnvelope → ReviewArtifact`; web app marca "🤖 gerado pelo agente · pendente de revisão". Aprovação só via verdict humano — `saveDraft` nunca executa/aprova (risco #1, provado no E2E). Risco #2 coberto por `provenance.sourceKind` (curl/endpoint/traffic). Segurança: credenciais de request redigidas antes de gravar o draft commitável; url do step validada na fronteira. ZERO dep nova (parser de curl deferido — o agente parseia nativamente). 146 testes, core ≥96%, 0 vulns. Provado também por MCP real (stdio) contra a API do GitHub. Artefatos: `knowledge-base/plans/m4-scenario-generation-plan.md`, `.../reviews/m4-scenario-generation-review-2026-06-19.md` (READY_TO_MERGE), `.../releases/v0.5.0-release.md`.
 
 **Top risks:**
 
@@ -197,6 +199,48 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
+## V2 — Fechar o loop (além da tese do V1)
+
+> Revisão de roadmap (2026-06-19) que abre o V2. O V1 (M0–M5) provou o loop agente→execução→revisão→verdict→regressão como **viewer de revisão**. O V2 fecha o loop de volta ao consumidor (agente/CI), transformando o Hodor de viewer em **gate de regressão**. Motivação: a North-star ("% de mudanças de agente com cenário revisado-e-aprovado anexado") só se move quando o agente consegue *consumir* a aprovação, não só produzi-la.
+
+### M6 — [ ] Fechar o loop: golden baseline + gate de regressão
+
+**Objective:** Dar ao agente um veredito de regressão **consumível por máquina** — comparando o run atual contra o último run **aprovado** do cenário (o *golden*) — fechando o loop autor → aprovação → consumo, sem auto-aprovar.
+
+**Definition of done:**
+
+- [ ] Conceito de "golden run": `findGoldenRun(scenarioKey)` retorna o run mais recente cujo cenário tem verdict `approved` (generaliza o `findPreviousRun` do M5 de "anterior" para "último aprovado"); `null` se nunca aprovado.
+- [ ] Tool MCP `check_scenario` que executa um cenário contra o serviço atual e retorna estruturado `{ status: "ok" | "regression" | "no_baseline", diff }` comparando vs golden — nunca auto-aprova (humano permanece no gate).
+- [ ] Replay de suíte: roda todos os cenários que têm golden e devolve um relatório agregado pass/fail + diff (o gate que o agente invoca antes de declarar uma mudança pronta).
+- [ ] Web: a página de diff compara "vs golden aprovado" (além de vs anterior); a listagem marca regressões vs baseline.
+
+**Dependencies:** M2 (verdict), M3 (reviews/artefato), M5 (diffRuns).
+
+**Top risks:**
+
+1. Golden stale ou cenário editado desde a aprovação (a `scenarioKey` muda → golden órfão) — mitigar avisando explicitamente "sem baseline para esta versão do cenário" em vez de comparar contra um golden de outra forma.
+2. `check_scenario` re-executa contra o serviço real — sem env/secrets (M7) só cobre endpoints sem auth; declarar o teto honestamente e tratar como dependência do M7.
+
+---
+
+### M7 — [ ] Injeção de env/secrets no run time
+
+**Objective:** Permitir testar APIs reais **autenticadas** injetando segredos/variáveis de ambiente na execução, sem commitar o segredo — removendo o teto do gate de regressão (M6).
+
+**Definition of done:**
+
+- [ ] Interpolação de env/secret (`${{ env.NOME }}` ou equivalente) resolve de uma fonte de ambiente no run time, não só de variáveis capturadas de steps anteriores.
+- [ ] Segredos injetados NUNCA são persistidos em `runs/`/`reviews/`/`drafts/` (reusa o redator do M3/M4 em todos os sinks).
+- [ ] E2E: um cenário com header de auth via env executa contra um endpoint autenticado real e passa.
+
+**Dependencies:** M1 (interpolação), M3/M4 (redação de segredos). Desbloqueia o teto do M6.
+
+**Top risks:**
+
+1. Segredo vazar em log/artefato — mitigar redação em TODOS os sinks (já existe o SoT `redactRequestHeaders` do M3).
+
+---
+
 ## State-of-the-art references
 
 Peers cloned under `knowledge-base/references/`. See `_catalog.md` in that folder for license-gate decisions and study notes.
@@ -207,7 +251,7 @@ Peers cloned under `knowledge-base/references/`. See `_catalog.md` in that folde
 | hoppscotch | MIT | API client web open-source — referência de UI de inspeção | M2 |
 | step-ci | MPL-2.0 | YAML multi-step + captures + asserts (⚠️ estagnado desde ago/2024) | M1 |
 | hurl | Apache-2.0 | HTTP testing plain-text, chain/captures/asserts | M1 |
-| keploy | Apache-2.0 | record/replay + regressão + anti-flaky (field normalization) | M4, M5 |
+| keploy | Apache-2.0 | record/replay + regressão + anti-flaky (field normalization) + golden baseline | M4, M5, M6 |
 | schemathesis | MIT | geração de testes a partir de OpenAPI/GraphQL + edge cases | M4 |
 | mcp-typescript-sdk | Apache-2.0 / MIT¹ | SDK oficial para construir o MCP server em TS | M0, M4 |
 

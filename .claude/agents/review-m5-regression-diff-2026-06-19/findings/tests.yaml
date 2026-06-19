@@ -1,0 +1,170 @@
+agent: review-m5-regression-diff-tests
+review_target: main..HEAD for plan m5-regression-diff
+plan: .claude/knowledge-base/plans/m5-regression-diff-plan.md
+verdict: READY_TO_MERGE
+summary: >
+  Suíte M5 sólida e centrada em comportamento. 184/184 testes verdes;
+  coverage core ≥90% nos três arquivos novos (maskNoise 100% linhas,
+  diffRuns 96.15%, runHistory 93.54%). O E2E é honesto: prova anti-flaky
+  REAL (runs do mesmo cenário diferindo só no $.timestamp declarado como
+  noise → bodyChanged:false) E detecção de mudança real (campo value
+  NÃO-noise muda → bodyChanged:true). Nenhum .only/.skip/xit. Os 3 DoDs e
+  os 4 MUST-FIX (EC-1..EC-4) têm assert dedicado. Findings são LOW/INFO —
+  lacunas de cobertura de branch e overclaim em comentário, nada que
+  bloqueie merge.
+
+test_pyramid:
+  unit_added: 30        # maskNoise(8) + diffRuns(8) + runHistory(9) + noisePropagation(4) + render M5(4) - aprox
+  integration_added: 4  # web/server.test.ts "M5 diff route" (servidor HTTP real + fs real)
+  e2e_added: 1          # m5-e2e.test.ts (servidor alvo efêmero + web server + fs + loop completo)
+  total: 35
+  note: >
+    Pirâmide correta (muitos unit puros, poucos integração, 1 E2E). Não há
+    inversão. core puro (maskNoise/diffRuns) sem I/O; runHistory/web/E2E
+    usam fs/HTTP reais via tmpdir — fronteira correta.
+
+dod_coverage:
+  - dod: "DoD #1 — histórico comparável (anterior vs atual)"
+    covered: true
+    evidence: "find_previous_run_returns_immediately_prior_same_scenario + e2e step 1 (prev?.runId === a1)"
+  - dod: "DoD #2 — diff status/headers/body destacado na web"
+    covered: true
+    evidence: "diff_runs_flags_status_change/flags_body_change + render_diff_highlights_status_change + web_diff_route_renders_diff_vs_previous + e2e step 4"
+  - dod: "DoD #3 — normalização de voláteis (incl. body) reduz falso positivo"
+    covered: true
+    evidence: "diff_runs_ignores_noise_body_field + diff_runs_ignores_volatile_headers + e2e step 2 (bodyChanged false só com timestamp mudando)"
+
+must_fix_coverage:
+  - ec: "EC-1 — run aprovado (verdict) PINNED, prune nunca apaga"
+    covered: true
+    evidence: "prune_run_history_never_deletes_approved_run (saveVerdict em a1, prune limit=2 mantém a1 mais antigo)"
+  - ec: "EC-2 — limit clamp max(1,…)"
+    covered: partial
+    evidence: "prune_run_history_clamps_nonpositive_limit testa SÓ limit=0; negativo/NaN não exercidos (ver F-tests-3)"
+  - ec: "EC-3 — ordem total em empate de createdAt por (createdAt, runId)"
+    covered: true
+    evidence: "find_previous_run_breaks_createdAt_tie_deterministically (3 runs com createdAt idêntico → desempate por runId determinístico)"
+  - ec: "EC-4 — :id UUID-validado, scenarioKey vem do run carregado não da URL"
+    covered: true
+    evidence: "web_diff_route_400_for_malformed_id (..%2f..%2fetc → 400) + web_diff_route_404_for_missing_run"
+
+edge_cases_from_plan:
+  covered: 18
+  missing: []
+  anti_flaky_check:
+    same_scenario_only_noise_differs: true
+    evidence: >
+      e2e step 2: r2 e o run fresco usam o MESMO serverValue="stable-A";
+      o servidor só incrementa $.timestamp (tick) entre requests → os dois
+      bodies diferem SÓ no path de noise declarado ($.timestamp). diffRuns
+      → bodyChanged:false, hasRegression:false. Anti-flaky genuíno, não
+      teatro.
+  real_change_check:
+    changes_non_noise_field: true
+    evidence: >
+      e2e step 3: serverValue="changed-B" muda $.value (NÃO-noise); r3 ainda
+      tem timestamp diferente. diffRuns(r2,r3) → bodyChanged:true. Prova que
+      a detecção real sobrevive à supressão de noise (não é falso-negativo).
+
+findings:
+  - id: F-tests-1
+    severity: LOW
+    file: src/core/maskNoise.test.ts
+    line: 16
+    plan_ref: "T1.2 maskNoise — branch coverage"
+    summary: >
+      maskNoise.ts linha 30 (guarda `node.parent != null && node.parentProperty
+      != null` ramo falso) não coberta — branch 75%. Nenhum teste mascara o
+      nó raiz ($) onde parent é null. Comportamento atual (no-op no root) não
+      é provado por assert.
+    evidence: |
+      npx vitest run --coverage → maskNoise.ts | 100 stmts | 75 branch | Uncovered: 30
+    recommended_action: >
+      Adicionar `mask_noise_root_path_is_noop` — maskNoise('{"a":1}', ["$"])
+      não deve lançar e (decidir comportamento esperado) deixar body inalterado.
+
+  - id: F-tests-2
+    severity: LOW
+    file: src/core/runHistory.test.ts
+    line: 44
+    plan_ref: "T2.1 findPreviousRun/pruneRunHistory — dir inexistente"
+    summary: >
+      runHistory.ts linhas 44-45 (ramo ENOENT do loadAllRuns → retorna [])
+      não cobertas. findPreviousRun/pruneRunHistory sobre diretório
+      inexistente é um failure-scenario plausível (dir ainda não criado) sem
+      teste de regressão.
+    evidence: |
+      Uncovered Line #s: 44-45 (catch ENOENT em loadAllRuns)
+    recommended_action: >
+      Adicionar `find_previous_run_returns_null_for_nonexistent_dir` —
+      findPreviousRun(env, "/tmp/nao-existe-xyz") resolve para null sem lançar.
+
+  - id: F-tests-3
+    severity: LOW
+    file: src/core/runHistory.test.ts
+    line: 103
+    plan_ref: "EC-2 — limit clamp 0/negativo/NaN"
+    summary: >
+      O comentário de prune_run_history_clamps_nonpositive_limit afirma cobrir
+      "0/negativo/NaN" mas o assert exercita SÓ limit=0. Embora o ramo de clamp
+      (predicate `Number.isInteger&&>0` falso) seja o mesmo para 0/-3/NaN, o
+      teste overclaima sua cobertura; um futuro refactor que tratasse 0 e NaN
+      por caminhos distintos passaria silenciosamente.
+    evidence: |
+      Linha 104 comenta "limit 0/negativo/NaN"; única chamada: pruneRunHistory("cenário-a", dir, 0, vdir)
+    recommended_action: >
+      Parametrizar com it.each([0, -3, NaN]) ou adicionar dois asserts
+      explícitos, OU corrigir o comentário para "limit não-positivo (0)".
+
+  - id: F-tests-4
+    severity: LOW
+    file: src/web/render.test.ts
+    line: 240
+    plan_ref: "T3.1 render_diff_escapes_header_diff_content"
+    summary: >
+      O teste de XSS no header-diff coloca `<script>` só em `prev`; `curr:"y"`.
+      O caminho de escape de `h.curr` (render.ts:307) nunca é exercido com
+      conteúdo malicioso. Mesmo escapeHtml é usado em ambos, então risco real
+      é nulo, mas o teste não prova o lado `curr`.
+    evidence: |
+      render.test.ts:241 headerDiffs:[{ key:"x", prev:"<script>...", curr:"y" }]
+    recommended_action: >
+      Adicionar `curr: "<img src=x onerror=1>"` ao mesmo headerDiff e assert
+      que não vaza — ou um segundo caso cobrindo curr.
+
+  - id: F-tests-5
+    severity: INFO
+    file: src/core/diffRuns.test.ts
+    line: 1
+    plan_ref: "TDD discipline (testing.md §3 RED-before-GREEN)"
+    summary: >
+      Ordem RED→GREEN não é verificável independentemente: teste e
+      implementação chegam no MESMO commit por tarefa (ae373d1 maskNoise+
+      diffRuns; f9e4772 runHistory; 1f9195c E2E). É a convenção task-as-unit
+      do projeto, não uma violação per se, mas impede a auditoria de "teste
+      falhou antes do fix".
+    evidence: |
+      git log --follow: src/core/diffRuns.ts e diffRuns.test.ts ambos em ae373d1
+    recommended_action: >
+      Nenhuma ação bloqueante. Opcional: futuros commits podem separar o RED
+      (teste falhando) do GREEN para deixar a disciplina TDD auditável no log.
+
+  - id: F-tests-6
+    severity: INFO
+    file: src/m5-e2e.test.ts
+    line: 88
+    plan_ref: "T4.1 E2E step 6 — retenção"
+    summary: >
+      O passo de retenção do E2E poda com limit=2 e afirma length===2, mas
+      nenhum dos 3 runs do E2E tem verdict — então o PIN de aprovado (EC-1)
+      NÃO é exercido no caminho E2E (só no unit prune_run_history_never_
+      deletes_approved_run). Cobertura adequada via unit; E2E poderia provar
+      o pin no loop integrado.
+    evidence: |
+      m5-e2e.test.ts:88 pruneRunHistory(scenarioKey(r3), runsDir, 2, verdictsDir) — verdictsDir vazio
+    recommended_action: >
+      Opcional: aprovar r1 (saveVerdict) antes do prune e assertar que r1
+      sobrevive mesmo sendo o mais antigo, fechando EC-1 também no E2E.
+
+blockers: []
+high: []

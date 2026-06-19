@@ -1,0 +1,28 @@
+{
+  "name": "saude-api",
+  "provenance": {
+    "generatedAt": "2026-06-19T22:13:19.384Z",
+    "origin": "agent-generated",
+    "sourceKind": "endpoint"
+  },
+  "schemaVersion": 1,
+  "steps": [
+    {
+      "asserts": [
+        {
+          "op": "equals",
+          "source": "status",
+          "value": 200
+        }
+      ],
+      "name": "get",
+      "request": {
+        "headers": {
+          "user-agent": "hodor"
+        },
+        "method": "GET",
+        "url": "http://127.0.0.1:46711/saude"
+      }
+    }
+  ]
+}

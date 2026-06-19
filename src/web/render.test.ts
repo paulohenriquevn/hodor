@@ -213,3 +213,70 @@ describe("M4 — badge de proveniência (gerado pelo agente)", () => {
     expect(html).toContain("🤖 gerado");
   });
 });
+
+import { renderDiff } from "./render.js";
+import type { RunDiff } from "../core/index.js";
+
+describe("M5 — renderDiff (regressão)", () => {
+  const currEnv = { ...envelope([step()]), runId: "cur" } as RunEnvelope;
+  const prevEnv = { ...envelope([step()]), runId: "prev" } as RunEnvelope;
+
+  it("render_diff_highlights_status_change", () => {
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: true, headerDiffs: [], bodyChanged: false }], stepCountChanged: false, noiseChanged: false, hasRegression: true };
+    const html = renderDiff(currEnv, prevEnv, diff);
+    expect(html).toContain("Mudança de comportamento detectada");
+    expect(html).toContain("status mudou");
+  });
+
+  it("render_diff_shows_no_regression_when_identical", () => {
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: false, headerDiffs: [], bodyChanged: false }], stepCountChanged: false, noiseChanged: false, hasRegression: false };
+    expect(renderDiff(currEnv, prevEnv, diff)).toContain("Sem mudança de comportamento");
+  });
+
+  it("render_diff_first_run_message_when_no_previous", () => {
+    expect(renderDiff(currEnv, null, null)).toContain("Primeiro run deste cenário");
+  });
+
+  it("render_diff_escapes_header_diff_content", () => {
+    const diff: RunDiff = { steps: [{ stepIndex: 0, statusChanged: false, headerDiffs: [{ key: "x", prev: "<script>alert(1)</script>", curr: "y" }], bodyChanged: false }], stepCountChanged: false, noiseChanged: false, hasRegression: true };
+    const html = renderDiff(currEnv, prevEnv, diff);
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+});
+
+describe("M6 — listagem marca regressão", () => {
+  it("web_listing_marks_regression_vs_golden", () => {
+    const html = renderListing([
+      { runId: "00000000-0000-0000-0000-0000000000r1", name: "reg", createdAt: "x", stepCount: 1, allAssertsPass: true, verdict: null, regression: true },
+      { runId: "00000000-0000-0000-0000-0000000000r2", name: "ok", createdAt: "y", stepCount: 1, allAssertsPass: true, verdict: null },
+    ]);
+    expect(html).toContain("⚠ regressão");
+    // só 1 badge (o run ok não tem)
+    expect(html.split("⚠ regressão").length - 1).toBe(1);
+  });
+});
+
+describe("M6.1 — UX do gate (golden badge + aviso de aprovar run com falha)", () => {
+  it("listing_shows_golden_badge_for_current_baseline", () => {
+    const html = renderListing([
+      { runId: "00000000-0000-0000-0000-0000000000g1", name: "cen", createdAt: "x", stepCount: 1, allAssertsPass: true, verdict: "approved", isGolden: true },
+      { runId: "00000000-0000-0000-0000-0000000000o1", name: "cen", createdAt: "y", stepCount: 1, allAssertsPass: true, verdict: "approved" },
+    ]);
+    expect(html).toContain("🏆 golden");
+    expect(html.split("🏆 golden").length - 1).toBe(1); // só na linha que É o baseline
+  });
+
+  it("run_page_warns_when_approving_run_with_failing_asserts", () => {
+    const failing = envelope([
+      step({ asserts: [{ source: "status", op: "equals", value: 200, pass: false, expected: 200, actual: 500 }] }),
+    ]);
+    const html = renderRun(failing, null); // pendente + assert falhando
+    expect(html).toContain("asserts falhando");
+  });
+
+  it("run_page_no_warning_when_asserts_pass", () => {
+    const ok = envelope([step({ asserts: [{ source: "status", op: "equals", value: 201, pass: true, expected: 201, actual: 201 }] })]);
+    expect(renderRun(ok, null)).not.toContain("asserts falhando");
+  });
+});

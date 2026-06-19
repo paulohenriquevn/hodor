@@ -1,0 +1,145 @@
+agent: review-m6-golden-gate-wiring
+review_target: develop @ m6-golden-gate (commits c7396c5, 2b41db6, f4f846f, 634b0c1)
+plan: .claude/knowledge-base/plans/m6-golden-gate-plan.md
+
+triad_revalidation:
+  total_new_symbols: 9   # findGoldenRun, checkScenario, replaySuite, ScenarioIdentity, CheckResult, CheckStatus, CheckScenarioOptions, SuiteReport(+SuiteItemResult/SuiteStatus)
+  pillar_a_honest_pass: "7 / 7 runtime symbols"   # findGoldenRun, checkScenario, replaySuite wired; types are export-for-API
+  pillar_b_honest_pass: "7 / 7"
+  pillar_c_observed: "partial — stderr metric present but never asserted; getter accessors dead"
+
+per_symbol:
+  findGoldenRun:
+    pillar_a: PASS
+    callers_production:
+      - src/core/checkScenario.ts:39   # gate busca o golden por scenarioKey(run)
+      - src/web/server.ts:115          # GET /runs/:id/diff?vs=golden
+      - src/web/server.ts:263          # listRuns badge de regressão (best-effort)
+    classification: real callers, functionally necessary (not no-op / dead branch)
+    public_api: src/core/index.ts:59
+    verdict: honestly wired
+  checkScenario:
+    pillar_a: PASS
+    callers_production:
+      - src/mcp/server.ts:176          # tool check_scenario
+      - src/core/replaySuite.ts:51     # iteração da suíte
+    pillar_b: src/m6-e2e.test.ts:53/62/69 exercises Act phase (no_baseline/ok/regression)
+    public_api: src/core/index.ts:60
+    verdict: honestly wired
+  replaySuite:
+    pillar_a: PASS
+    callers_production:
+      - src/mcp/server.ts:205          # tool replay_suite
+    pillar_b: src/m6-e2e.test.ts:74 exercises Act phase (aggregates regression=1, allOk=false)
+    public_api: src/core/index.ts:61
+    verdict: honestly wired
+  ScenarioIdentity:
+    classification: export-for-API (type) — parameterizes scenarioKey; consumed by checkScenario/replaySuite/web. NOT dead.
+  CheckResult / CheckStatus / CheckScenarioOptions:
+    classification: export-for-API (types) — CheckStatus reused by SuiteStatus (replaySuite.ts:15). Not dead.
+  SuiteReport / SuiteItemResult / SuiteStatus:
+    classification: export-for-API (types) — SuiteReport is checkScenario/replaySuite return contract. Not dead.
+
+integration_with_existing_flows:
+  entry_points_traced:
+    - "MCP: buildServer() -> registerTool check_scenario -> checkScenario -> runScenario+findGoldenRun+diffRuns  (REACHABLE)"
+    - "MCP: buildServer() -> registerTool replay_suite -> replaySuite -> listDrafts+checkScenario  (REACHABLE)"
+    - "Web: handle() GET /runs/:id/diff?vs=golden -> findGoldenRun -> diffRuns -> renderDiff  (REACHABLE)"
+    - "Web: handle() GET / -> listRuns -> findGoldenRun -> diffRuns -> renderListing badge  (REACHABLE)"
+  result: every new module has a real path from an entry point. No orphan modules.
+
+boundary_dip:
+  core_imports_outer: "none — grep 'from \"../web|../mcp\"' src/core/ empty (matches plan Global DoD)"
+  verdict: DIP preserved
+
+findings:
+  - id: F-wire-1
+    severity: MEDIUM
+    file: src/mcp/server.ts
+    line: 54-62
+    plan_ref: T4.1 wiring triad pillar (c) — "checkCount/replayCount stderr"; Global DoD observability
+    summary: >
+      getCheckCount() and getReplayCount() are exported but have ZERO callers in
+      production OR tests — dead exports. Every M0-M5 sibling accessor
+      (getRunCount, getScenarioRunCount, getDraftSavedCount) is asserted in a
+      paired integration test to PROVE the metric increments; the two new M6
+      counters are not. checkCount/replayCount are still incremented and logged
+      to stderr inside the tool handlers, so the counter side-effect itself is
+      live — but the public accessor is unreachable and the increment is never
+      verified by a test (pillar c is logged-but-unverified, not observed).
+    evidence: |
+      src/mcp/server.ts:54  let checkCount = 0; export function getCheckCount()...
+      src/mcp/server.ts:59  let replayCount = 0; export function getReplayCount()...
+      grep -rn "getCheckCount|getReplayCount" src/ --include=*.ts
+        -> only the two definitions in server.ts; no caller, no test assertion.
+      Contrast: src/mcp/server.test.ts:87 asserts getRunCount() === before+1;
+                src/mcp/scenario.test.ts:112 asserts getScenarioRunCount();
+                src/mcp/draft.test.ts:81 asserts getDraftSavedCount().
+      src/mcp/check.test.ts (M6) asserts status/persistence but NEVER the counter.
+    recommended_action: >
+      Add an assertion in src/mcp/check.test.ts mirroring the M0-M5 pattern
+      (getCheckCount()/getReplayCount() === before+1 after the tool call) to make
+      pillar (c) honestly observed and give the exported accessors a caller.
+      Otherwise remove the unused getCheckCount/getReplayCount exports (dead code,
+      code-quality FAIL_HARD risk: dead_public_export).
+
+  - id: F-wire-2
+    severity: LOW
+    file: src/m6-e2e.test.ts
+    line: 79-83
+    plan_ref: T6.1 step 6 — "web GET /runs/:id/diff?vs=golden destaca a mudança"
+    summary: >
+      The E2E exercises the web ?vs=golden path (good — closes the loop end to
+      end), but the listing-badge branch of findGoldenRun (src/web/server.ts:263,
+      DoD #4 "listagem marca regressões") is NOT touched by the E2E — only by the
+      unit test src/web/server.test.ts. The cross-module path
+      entry-point(listRuns) -> findGoldenRun -> badge is covered only at unit
+      level, not in the integrated E2E. Reachability holds; depth is shallower
+      than the diff path.
+    evidence: |
+      src/m6-e2e.test.ts fetches /runs/:id/diff?vs=golden (line 82) but never
+      fetches "/" to assert the regression badge appears in renderListing.
+      src/web/server.ts:259-267 listRuns regression badge — unit-tested only.
+    recommended_action: >
+      Optional: extend the E2E with a GET "/" assertion that the regressed run
+      shows the "⚠ regressão" badge, exercising the second production caller of
+      findGoldenRun in the integrated flow. Not blocking — unit coverage exists.
+
+  - id: F-wire-3
+    severity: LOW
+    file: src/core/checkScenario.ts
+    line: 36-39
+    plan_ref: D2 — "checkScenario RE-RODA; core NÃO persiste; run novo nunca é seu próprio baseline"
+    summary: >
+      Honest note (not a defect): checkScenario re-runs via runScenario and then
+      searches the golden among ALREADY-persisted runs (EC-3). The MCP adapter
+      persists the fresh run AFTER checkScenario returns (server.ts:177), so the
+      ordering invariant "new run is never its own baseline" holds at the seam.
+      Verified the core does not call persistRun. Wiring is correct; flagged only
+      to record that the no-self-baseline guarantee depends on the adapter
+      persisting strictly after the check, which it does.
+    evidence: |
+      src/core/checkScenario.ts: no persistRun import/call (core pure).
+      src/mcp/server.ts:176-178: checkScenario(...) THEN persistRun(run) THEN prune.
+      Covered by src/core/checkScenario.test.ts:check_scenario_finds_golden_before_persisting.
+    recommended_action: none — wiring is honest. Recorded for traceability.
+
+dead_exports:
+  - getCheckCount  (src/mcp/server.ts:55) — no caller, no test  [see F-wire-1]
+  - getReplayCount (src/mcp/server.ts:60) — no caller, no test  [see F-wire-1]
+  note: >
+    ScenarioIdentity, CheckResult, CheckStatus, CheckScenarioOptions, SuiteReport,
+    SuiteItemResult, SuiteStatus are export-for-API types, each consumed internally
+    or part of a public return/param contract — NOT dead.
+
+summary: >
+  M6 wiring is largely honest: findGoldenRun, checkScenario, replaySuite each have
+  real, functionally-necessary production callers and reachable paths from MCP
+  tool handlers and web routes; DIP is preserved (core imports no adapter); the
+  E2E exercises the closed loop (no_baseline -> approve -> ok -> regression ->
+  suite -> web diff vs golden -> no auto-verdict). One real gap: the new pillar-c
+  runtime metric accessors getCheckCount/getReplayCount are dead exports never
+  asserted by any test — unlike every M0-M5 counter — so observability for the M6
+  tools is logged-but-unverified. No BLOCKER or HIGH findings.
+
+verdict_contribution: READY_TO_MERGE (1 MEDIUM, 2 LOW — no BLOCKER, no HIGH)
