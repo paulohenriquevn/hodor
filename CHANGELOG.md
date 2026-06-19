@@ -7,12 +7,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ## [Unreleased]
 
 ### Added
-- **M4 — Geração de cenários assistida pelo agente:** nova tool MCP `save_scenario_draft` — o agente monta um cenário candidato (a partir de endpoint/curl/OpenAPI que ele lê) e o submete; a tool valida (zod) e persiste como **rascunho não-aprovado** em `drafts/{draftId}.json` (commitável, para o humano editar/refinar no git antes de aprovar). Proveniência aditiva (`provenance: {origin, sourceKind, sourceRef?, generatedAt}`) propaga `Scenario → RunEnvelope → ReviewArtifact`, e a web app marca os runs gerados como **"🤖 gerado pelo agente · pendente de revisão"** na listagem e na visão do run. A aprovação continua sendo EXCLUSIVAMENTE o verdict humano (M2) → `reviews/` (M3) — a tool nunca executa nem auto-aprova. `drafts/` é commitável; `runs/`+`verdicts/` permanecem efêmeros. Campos opcionais (`schemaVersion:1` preservado) — cenários/runs M0-M3 seguem válidos. ZERO dependência nova (o agente parseia curl e gera asserts nativamente; parser de curl embutido deferido).
 
 ### Changed
-
-### Security
-- **M4 — Redação de credenciais no draft commitável:** como `drafts/{id}.json` é commitável, `saveDraft` redige (`<redacted>`) os headers de request sensíveis do cenário (`authorization`, `cookie`, `x-api-key`, ...) reusando o redator do M3, e faz redação best-effort de credenciais embutidas em `provenance.sourceRef` (ex.: curl com `-H "Authorization: Bearer ..."`). `provenance.sourceRef` ganhou bound de tamanho (`max 4096`). Resíduo conhecido: segredos embutidos na URL/body do cenário não são redigidos — o agente não deve embuti-los (use interpolação `${{ var }}`). A url de cada step do draft é validada na fronteira (URL absoluta ou template) — url-lixo é rejeitada fail-fast.
 
 ### Deprecated
 
@@ -21,6 +17,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ### Fixed
 
 ### Security
+
+## [0.5.0] - 2026-06-19
+
+### Added
+- **M4 — Geração de cenários assistida pelo agente:** nova tool MCP `save_scenario_draft` — o agente monta um cenário candidato (a partir de endpoint/curl/OpenAPI que ele lê) e o submete; a tool valida (zod) e persiste como **rascunho não-aprovado** em `drafts/{draftId}.json` (commitável, para o humano editar/refinar no git antes de aprovar). Proveniência aditiva (`provenance: {origin, sourceKind, sourceRef?, generatedAt}`) propaga `Scenario → RunEnvelope → ReviewArtifact`, e a web app marca os runs gerados como **"🤖 gerado pelo agente · pendente de revisão"** na listagem e na visão do run. A aprovação continua sendo EXCLUSIVAMENTE o verdict humano (M2) → `reviews/` (M3) — a tool nunca executa nem auto-aprova. `drafts/` é commitável; `runs/`+`verdicts/` permanecem efêmeros. Campos opcionais (`schemaVersion:1` preservado) — cenários/runs M0-M3 seguem válidos. ZERO dependência nova (o agente parseia curl e gera asserts nativamente; parser de curl embutido deferido).
+
+
+### Security
+- **M4 — Redação de credenciais no draft commitável:** como `drafts/{id}.json` é commitável, `saveDraft` redige (`<redacted>`) os headers de request sensíveis do cenário (`authorization`, `cookie`, `x-api-key`, ...) reusando o redator do M3, e faz redação best-effort de credenciais embutidas em `provenance.sourceRef` (ex.: curl com `-H "Authorization: Bearer ..."`). `provenance.sourceRef` ganhou bound de tamanho (`max 4096`). Resíduo conhecido: segredos embutidos na URL/body do cenário não são redigidos — o agente não deve embuti-los (use interpolação `${{ var }}`). A url de cada step do draft é validada na fronteira (URL absoluta ou template) — url-lixo é rejeitada fail-fast.
 
 ## [0.4.0] - 2026-06-19
 
