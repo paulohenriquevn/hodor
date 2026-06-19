@@ -20,6 +20,8 @@ export interface ListingItem {
   origin?: "agent-generated" | "human-authored";
   // M6: este run regride vs o golden aprovado do cenário (badge "regressão"). Best-effort.
   regression?: boolean;
+  // M6.1: este run É o golden (baseline aprovado atual) do cenário. Best-effort.
+  isGolden?: boolean;
 }
 
 /**
@@ -158,6 +160,18 @@ function provenanceBadge(env: RunEnvelope, verdict: Verdict | null): string {
   return `<p class='provenance agent'>🤖 gerado pelo agente${pending}${src}</p>`;
 }
 
+/**
+ * Aviso de aprovação perigosa (M6.1): se o run tem asserts FALHANDO e ainda está
+ * pendente, avisa que aprová-lo o tornará o baseline de regressão (golden) — protege
+ * o humano-no-gate de promover um comportamento quebrado por engano. Não bloqueia.
+ */
+function failingAssertsWarning(env: RunEnvelope, verdict: Verdict | null): string {
+  if (verdict) return ""; // já decidido — sem aviso
+  const hasFailing = env.steps.some((s) => (s.asserts ?? []).some((a) => !a.pass));
+  if (!hasFailing) return "";
+  return `<p class='warn-approve'>⚠ Este run tem <strong>asserts falhando</strong>. Aprová-lo o tornará o <strong>baseline de regressão (golden)</strong> deste cenário — confirme que o comportamento é mesmo o esperado.</p>`;
+}
+
 /** Selo do verdict atual (EC-1: escapa `note`, input do humano). */
 function verdictBadge(verdict: Verdict | null): string {
   if (!verdict) return `<p class='verdict pending'>Verdict: <strong>pendente</strong></p>`;
@@ -210,6 +224,7 @@ export function renderRun(env: RunEnvelope, verdict: Verdict | null = null): str
     .verdict.rejected { background: #fdecef; color: #b00020; }
     .verdict.pending { background: #f6f8fa; color: #666; }
     .provenance.agent { font-size: .85rem; background: #eef3fb; color: #0b66c3; padding: .4rem .75rem; border-radius: 6px; }
+    .warn-approve { font-size: .85rem; background: #fff4d6; color: #8a6d00; padding: .5rem .75rem; border-radius: 6px; border: 1px solid #e6c200; }
     .verdict-form { margin: 1rem 0; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
     .verdict-form textarea { font-family: inherit; flex: 1; min-width: 200px; }
     a { color: #0b66c3; }
@@ -221,6 +236,7 @@ export function renderRun(env: RunEnvelope, verdict: Verdict | null = null): str
   <p class="meta">schemaVersion ${env.schemaVersion} · ${escapeHtml(env.createdAt)} · ${env.steps.length} step(s)</p>
   ${provenanceBadge(env, verdict)}
   ${verdictBadge(verdict)}
+  ${failingAssertsWarning(env, verdict)}
   ${verdictForm(env.runId)}
   ${steps}
 </body>
@@ -235,6 +251,7 @@ const LISTING_STYLE = `body { font-family: ui-monospace, SFMono-Regular, Menlo, 
     .v-approved { color: #137333; } .v-rejected { color: #b00020; } .v-pending { color: #888; }
     .agent-tag { font-size: .75rem; background: #eef3fb; color: #0b66c3; padding: 1px 6px; border-radius: 4px; }
     .reg-tag { font-size: .75rem; background: #fdecef; color: #b00020; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
+    .gold-tag { font-size: .75rem; background: #fff4d6; color: #8a6d00; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
     .muted { color: #888; }`;
 
 /** Página de listagem (GET /) — runs mais recentes primeiro. */
@@ -259,8 +276,10 @@ export function renderListing(items: ListingItem[]): string {
       const reg = it.regression
         ? ` <a class='reg-tag' href='/runs/${escapeHtml(it.runId)}/diff?vs=golden'>⚠ regressão</a>`
         : "";
+      // M6.1: badge do golden — qual run É o baseline aprovado atual do cenário.
+      const gold = it.isGolden ? ` <span class='gold-tag'>🏆 golden</span>` : "";
       return `<tr>
-        <td><a href='/runs/${escapeHtml(it.runId)}'>${it.name ? escapeHtml(it.name) : "(sem cenário)"}</a>${agent}${reg}</td>
+        <td><a href='/runs/${escapeHtml(it.runId)}'>${it.name ? escapeHtml(it.name) : "(sem cenário)"}</a>${gold}${agent}${reg}</td>
         <td><code>${escapeHtml(it.runId)}</code></td>
         <td>${escapeHtml(it.createdAt)}</td>
         <td>${it.stepCount}</td>

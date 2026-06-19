@@ -264,8 +264,10 @@ async function listRuns(dir: string, verdictsDir: string): Promise<ListingItem[]
     const verdict = await loadVerdict(id, verdictsDir);
     // M6 (DoD #4): este run regride vs o golden aprovado do cenário? best-effort.
     let regression = false;
+    let isGolden = false;
     try {
       const golden = await findGoldenRunIn(allEnvs, scenarioKey(env), verdictsDir);
+      isGolden = golden !== null && golden.runId === id; // M6.1: este run É o baseline
       regression = golden !== null && golden.runId !== id && diffRuns(golden, env).hasRegression;
     } catch {
       regression = false; // falha no cálculo do golden não derruba a listagem
@@ -280,6 +282,7 @@ async function listRuns(dir: string, verdictsDir: string): Promise<ListingItem[]
       // M4 (DoD #2): origem do cenário p/ o badge "gerado pelo agente".
       origin: env.provenance?.origin,
       regression,
+      isGolden,
       mtimeMs,
     });
   }

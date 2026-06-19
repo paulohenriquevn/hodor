@@ -256,3 +256,27 @@ describe("M6 — listagem marca regressão", () => {
     expect(html.split("⚠ regressão").length - 1).toBe(1);
   });
 });
+
+describe("M6.1 — UX do gate (golden badge + aviso de aprovar run com falha)", () => {
+  it("listing_shows_golden_badge_for_current_baseline", () => {
+    const html = renderListing([
+      { runId: "00000000-0000-0000-0000-0000000000g1", name: "cen", createdAt: "x", stepCount: 1, allAssertsPass: true, verdict: "approved", isGolden: true },
+      { runId: "00000000-0000-0000-0000-0000000000o1", name: "cen", createdAt: "y", stepCount: 1, allAssertsPass: true, verdict: "approved" },
+    ]);
+    expect(html).toContain("🏆 golden");
+    expect(html.split("🏆 golden").length - 1).toBe(1); // só na linha que É o baseline
+  });
+
+  it("run_page_warns_when_approving_run_with_failing_asserts", () => {
+    const failing = envelope([
+      step({ asserts: [{ source: "status", op: "equals", value: 200, pass: false, expected: 200, actual: 500 }] }),
+    ]);
+    const html = renderRun(failing, null); // pendente + assert falhando
+    expect(html).toContain("asserts falhando");
+  });
+
+  it("run_page_no_warning_when_asserts_pass", () => {
+    const ok = envelope([step({ asserts: [{ source: "status", op: "equals", value: 201, pass: true, expected: 201, actual: 201 }] })]);
+    expect(renderRun(ok, null)).not.toContain("asserts falhando");
+  });
+});
