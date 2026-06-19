@@ -57,6 +57,7 @@ export {
 export { stableStringify } from "./stableStringify.js";
 export {
   normalizeRun,
+  redactRequestHeaders,
   VOLATILE_HEADERS,
   VOLATILE_HEADER_PREFIXES,
   SENSITIVE_REQUEST_HEADERS,

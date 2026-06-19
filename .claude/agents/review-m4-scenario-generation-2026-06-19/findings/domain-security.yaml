@@ -1,0 +1,124 @@
+agent: review-m4-scenario-generation-domain-security
+review_target: main..HEAD for plan m4-scenario-generation
+domain: security
+domain_specific_patterns_checked:
+  - "path-traversal defense (assertSafeId before path.join) on draft id"
+  - "credential redaction at the committable-artifact boundary (M3 F-sec-1 precedent: redactRequestHeaders / SENSITIVE_REQUEST_HEADERS)"
+  - "XSS escaping of provenance badge (sourceRef / sourceKind via escapeHtml)"
+  - "prototype pollution via JSON.parse on loadDraft"
+  - "untrusted agent-controlled id surface (MCP tool -> saveDraft)"
+
+summary: |
+  One HIGH finding (the M4 #1 security risk): the agent-generated draft is persisted RAW into a
+  COMMITTABLE file (drafts/{id}.json) with NO credential redaction — Authorization/Cookie/x-api-key
+  in steps[].request.headers, secrets in request.body, and an embedded curl (-H "Authorization: ...")
+  in provenance.sourceRef all go verbatim to git/PR. This is the SAME threat model the M3 review
+  closed as F-sec-1 (classified Security), but on the draft boundary it is UNMITIGATED and there is
+  asymmetry: the run->review path redacts (normalizeRun.redactRequestHeaders), the draft path does not.
+  Path-traversal (assertSafeId before join, regex blocks ../ and /), XSS (escapeHtml on sourceRef/
+  sourceKind), and prototype pollution (zod strips unknown keys) are all handled correctly.
+
+findings:
+  - id: F-sec-1
+    severity: HIGH
+    file: src/core/draftStore.ts
+    line: 50
+    plan_ref: ADR D4 — Draft em drafts/{draftId}.json commitável (DoD #3); Baseline Context "drafts/ é COMMITÁVEL"
+    domain_anchor: "M3 review F-sec-1 (knowledge-base/reviews/m3-versionable-persistence-review-2026-06-19.md L15-17) — credencial em artefato commitável é finding Security; CLAUDE.md §8 Error Handling / public-copy threat model"
+    summary: >
+      saveDraft persiste o Scenario CRU em drafts/{id}.json (commitável) sem redigir credenciais.
+      steps[].request.headers pode conter Authorization/Cookie/x-api-key, request.body pode conter
+      segredos, e provenance.sourceRef tipicamente é um curl com -H "Authorization: Bearer ...". Tudo
+      isso vai verbatim para o git/PR. É o MESMO vazamento que o M3 fechou como F-sec-1, mas aqui está
+      sem mitigação. Assimetria comprovada: o caminho run->review (normalizeRun) redige; o caminho do
+      draft não. O cenário é a ENTRADA, mas os headers de auth da request do cenário SÃO segredos.
+    evidence: |
+      draftStore.ts (sem redação — grava o Scenario validado tal qual):
+      ```ts
+      const valid = DraftSchema.parse(scenario);       // valida, NÃO redige
+      ...
+      await writeFile(path, stableStringify(valid), "utf8");  // headers/body/sourceRef CRUS no git
+      ```
+      Contraste — normalizeRun.ts já trata exatamente isto no artefato commitável do M3 (F-sec-1):
+      ```ts
+      export const SENSITIVE_REQUEST_HEADERS = new Set([
+        "authorization","proxy-authorization","cookie","set-cookie",
+        "x-api-key","api-key","x-auth-token","x-amz-security-token","x-csrf-token"]);
+      function redactRequestHeaders(headers) { /* valor -> "<redacted>", chave preservada */ }
+      ```
+      scenarioSchema.ts ScenarioStepSchema.request.headers = z.record(z.string()).optional()  // aceita Authorization
+      provenance.ts sourceRef: z.string().optional()  // o curl com o token embutido entra aqui
+      .gitignore: "NOTA (M4): drafts/ ... é COMMITÁVEL ... NÃO ignorar." → confirma o threat model.
+      Nenhum teste em draftStore.test.ts cobre redação de credencial (cf. M3 tem
+      normalize_run_redacts_sensitive_request_headers).
+    recommended_action: >
+      Redigir credenciais na FRONTEIRA do draft, reusando o SoT do M3 (DRY): exportar
+      redactRequestHeaders/SENSITIVE_REQUEST_HEADERS de normalizeRun.ts e aplicar em saveDraft a
+      cada steps[].request.headers ANTES do writeFile. Adicionar heurística de redação de segredo em
+      provenance.sourceRef (ex.: mascarar valores após -H "Authorization:"/"-u "/Cookie:) OU, no
+      mínimo, validar que sourceRef não contém padrões de credencial e avisar. Adicionar teste de
+      regressão draft_redacts_sensitive_request_headers (espelhando o teste M3) ANTES do fix (Rule 5
+      TDD), e entrada CHANGELOG [Unreleased] § Security. Se houver decisão consciente de NÃO redigir
+      (ex.: drafts são locais até o humano commitar), exigir ADR explícito documentando o trade-off —
+      mas o default committable atual torna a redação a posição segura.
+
+  - id: F-sec-2
+    severity: LOW
+    file: src/core/draftStore.ts
+    line: 72
+    plan_ref: T1.3 — loadDraft valida na fronteira (zod), fail-loud
+    domain_anchor: "prototype pollution via JSON.parse de input não-confiável (draft commitável editável por humano/agente)"
+    summary: >
+      loadDraft faz DraftSchema.parse(JSON.parse(raw)) sobre um arquivo que é editável no git por
+      humano/agente. Avaliado: NÃO há pollution explorável — JSON.parse cria __proto__ como propriedade
+      OWN (não no protótipo) e zod object schema descarta chaves desconhecidas no parse, então o objeto
+      validado não propaga para Object.prototype. Registrado como LOW/INFO defensivo: se algum consumidor
+      futuro fizer merge profundo do draft cru (antes do parse) ou usar o objeto pré-validação, o risco
+      reaparece.
+    evidence: |
+      ```ts
+      return DraftSchema.parse(JSON.parse(raw));  // zod strip de chaves unknown neutraliza __proto__
+      ```
+      Não há Object.assign/merge profundo do JSON cru no caminho do draft. Confirmado seguro hoje.
+    recommended_action: >
+      Nenhuma ação obrigatória. Manter a invariante "nunca usar o objeto cru pré-zod em merge". Opcional:
+      comentário curto em loadDraft reforçando que o parse zod é a barreira anti-pollution.
+
+  - id: F-sec-3
+    severity: INFO
+    file: src/core/draftStore.ts
+    line: 28
+    plan_ref: T1.3 — assertSafeId espelha reviewArtifact.ts:65 (F-sec-2 do M3)
+    domain_anchor: "path-traversal no draftId (id pode vir do agente via tool)"
+    summary: >
+      VERIFICADO SEGURO. assertSafeId (regex ^[A-Za-z0-9._-]+$ + rejeição de "."/"..") roda ANTES do
+      join (linha 53 antes da 55), bloqueando ../ e separadores. Teste save_draft_rejects_path_traversal_id
+      cobre "../../etc/x". Reforço adicional: na tool MCP save_scenario_draft o id NÃO é controlável pelo
+      agente — saveDraft(scenario) é chamado sem options, logo o id é sempre randomUUID (server.ts:118).
+      Defense-in-depth correto. Nenhuma ação.
+    evidence: |
+      ```ts
+      assertSafeId(draftId);            // ANTES do join — bloqueia ../, /
+      const path = join(dir, `${draftId}.json`);
+      ```
+      server.ts:118 → const { draftId, path } = await saveDraft(scenario);  // sem id explícito → randomUUID
+    recommended_action: Nenhuma — registro positivo.
+
+  - id: F-sec-4
+    severity: INFO
+    file: src/web/render.ts
+    line: 154
+    plan_ref: T3.1 — render_escapes_provenance_source_ref (XSS herda M2)
+    domain_anchor: "XSS no badge de proveniência (sourceRef/sourceKind são input não-confiável vindo do agente)"
+    summary: >
+      VERIFICADO SEGURO. provenanceBadge escapa sourceKind E sourceRef via escapeHtml (que cobre
+      & < > " '), idêntico ao padrão M2. O badge da listagem (renderListing) não injeta dado dinâmico
+      de proveniência (só it.origin enum + it.name já escapado). XSS via draft commitável fica neutralizado
+      no render server-side. Nenhuma ação.
+    evidence: |
+      ```ts
+      const src = prov.sourceRef
+        ? ` <span class='muted'>(${escapeHtml(prov.sourceKind)}: ${escapeHtml(prov.sourceRef)})</span>`
+        : ` <span class='muted'>(${escapeHtml(prov.sourceKind)})</span>`;
+      ```
+    recommended_action: Nenhuma — registro positivo. (Nota: a defesa XSS NÃO substitui a redação F-sec-1 — escapar o segredo no HTML não impede o segredo de estar no git.)

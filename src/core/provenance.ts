@@ -12,7 +12,8 @@ import { z } from "zod";
 export const ProvenanceSchema = z.object({
   origin: z.enum(["agent-generated", "human-authored"]),
   sourceKind: z.enum(["curl", "openapi", "endpoint", "traffic"]),
-  sourceRef: z.string().optional(),
+  // Bound de tamanho na fronteira (F-arch-9): sourceRef guarda curl/exemplo, não um dump.
+  sourceRef: z.string().max(4096).optional(),
   generatedAt: z.string(),
 });
 

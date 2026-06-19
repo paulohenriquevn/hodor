@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { ScenarioSchema, type Scenario } from "./scenarioSchema.js";
 import { ProvenanceSchema } from "./provenance.js";
+import { redactRequestHeaders } from "./normalizeRun.js";
 import { stableStringify } from "./stableStringify.js";
 
 /**
@@ -14,8 +15,31 @@ import { stableStringify } from "./stableStringify.js";
  * (stableStringify) e validado na fronteira (zod). Espelha reviewArtifact (path-safety).
  */
 
+/** Aceita uma URL absoluta OU um template de interpolação (`${{ var }}` do M1). */
+function isUrlOrTemplate(url: string): boolean {
+  if (url.includes("${{")) return true; // resolvido em run-time (interpolação M1)
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Um draft SEMPRE tem proveniência (é gerado ou autorado — a origem importa).
-export const DraftSchema = ScenarioSchema.extend({ provenance: ProvenanceSchema });
+// EC-2: a url de cada step deve ser URL válida OU template — rejeita lixo ("not a url")
+// na fronteira (fail-fast), sem quebrar a interpolação `${{ }}` do M1.
+export const DraftSchema = ScenarioSchema.extend({ provenance: ProvenanceSchema }).superRefine((draft, ctx) => {
+  draft.steps.forEach((step, i) => {
+    if (!isUrlOrTemplate(step.request.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["steps", i, "request", "url"],
+        message: `invalid url: ${JSON.stringify(step.request.url)} (deve ser URL absoluta ou template \${{ var }})`,
+      });
+    }
+  });
+});
 export type Draft = z.infer<typeof DraftSchema>;
 
 /** Diretório de drafts (default `drafts/`, override por env). COMMITÁVEL. */
@@ -48,6 +72,10 @@ export async function saveDraft(
   options: SaveDraftOptions = {},
 ): Promise<{ draftId: string; path: string }> {
   const valid = DraftSchema.parse(scenario);
+  // F-sec-1: o draft é COMMITÁVEL — redige credenciais ANTES de gravar (mesma defesa
+  // do artefato de review M3; reusa o SoT redactRequestHeaders). Sem isso, um
+  // Authorization/Cookie no request do cenário gerado vazaria no git.
+  const redacted = redactDraftSecrets(valid);
   const dir = options.dir ?? defaultDraftsDir();
   const draftId = options.id ?? randomUUID();
   assertSafeId(draftId);
@@ -56,8 +84,35 @@ export async function saveDraft(
   if (await fileExists(path)) {
     throw new Error(`draft already exists: ${draftId} (use a new id to avoid overwriting a candidate)`);
   }
-  await writeFile(path, stableStringify(valid), "utf8");
+  await writeFile(path, stableStringify(redacted), "utf8");
   return { draftId, path };
+}
+
+const SECRET_IN_TEXT_RE =
+  /\b(authorization|cookie|x-api-key|api-key|x-auth-token|proxy-authorization)\b(\s*[:=]\s*)(\S[^"'\\]*)/gi;
+const BEARER_RE = /\b(Bearer)\s+\S+/gi;
+
+/**
+ * Redige credenciais do cenário antes de persistir o draft commitável (F-sec-1):
+ * - headers de request sensíveis → `<redacted>` (reusa o SoT do M3);
+ * - melhor-esforço no `provenance.sourceRef` (ex.: curl com `-H "Authorization: ..."`).
+ * NÃO muta o input. Resíduo conhecido: segredos embutidos em URL/body do cenário
+ * não são redigidos (o agente não deve embuti-los; documentado no CHANGELOG § Security).
+ */
+function redactDraftSecrets(draft: Draft): Draft {
+  const steps = draft.steps.map((step) =>
+    step.request.headers
+      ? { ...step, request: { ...step.request, headers: redactRequestHeaders(step.request.headers) } }
+      : step,
+  );
+  const sourceRef = draft.provenance.sourceRef
+    ? draft.provenance.sourceRef.replace(SECRET_IN_TEXT_RE, "$1$2<redacted>").replace(BEARER_RE, "$1 <redacted>")
+    : draft.provenance.sourceRef;
+  return {
+    ...draft,
+    provenance: { ...draft.provenance, ...(sourceRef !== undefined ? { sourceRef } : {}) },
+    steps,
+  };
 }
 
 /** Lê e VALIDA um draft; ausente → `null`. Inválido → lança (fail-loud). */

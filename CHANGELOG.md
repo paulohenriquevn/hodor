@@ -11,6 +11,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 
 ### Changed
 
+### Security
+- **M4 — Redação de credenciais no draft commitável:** como `drafts/{id}.json` é commitável, `saveDraft` redige (`<redacted>`) os headers de request sensíveis do cenário (`authorization`, `cookie`, `x-api-key`, ...) reusando o redator do M3, e faz redação best-effort de credenciais embutidas em `provenance.sourceRef` (ex.: curl com `-H "Authorization: Bearer ..."`). `provenance.sourceRef` ganhou bound de tamanho (`max 4096`). Resíduo conhecido: segredos embutidos na URL/body do cenário não são redigidos — o agente não deve embuti-los (use interpolação `${{ var }}`). A url de cada step do draft é validada na fronteira (URL absoluta ou template) — url-lixo é rejeitada fail-fast.
+
 ### Deprecated
 
 ### Removed

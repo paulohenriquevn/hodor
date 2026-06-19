@@ -1,0 +1,191 @@
+agent: review-m4-scenario-generation-cross-validation
+review_target: origin/main..develop for plan m4-scenario-generation
+plan: .claude/knowledge-base/plans/m4-scenario-generation-plan.md
+reviewed_at: 2026-06-19
+
+# ── Re-run chain (verified live, not claimed) ──
+chain_reverified:
+  vitest_run: "26 files / 144 tests PASSED"
+  tsc_noemit: "exit 0 (0 errors)"
+  npm_audit: "found 0 vulnerabilities"
+  new_deps: "ZERO (git diff a9f04b0..develop -- package.json package-lock.json is empty)"
+  git_check_ignore_drafts: "NOT-IGNORED (good — drafts/ commitável per D4/DoD#3)"
+  dip_check: "core does NOT import from web/mcp (grep clean)"
+  coverage_new_core:
+    draftStore_ts: "94.28% lines (≥90% ✓)"
+    provenance_ts: "exercised by 3 schema tests + propagation tests; pure 19-LoC zod schema; not flagged uncovered (✓)"
+    all_files: "92.34% lines"
+
+plan_tasks_summary:
+  total_tasks: 6        # T1.1 T1.2 T1.3 T2.1 T3.1 T4.1
+  fully_implemented: 6
+  partial: 0
+  missing: 0
+  diverged: 0
+
+# ── Task → commit → status ──
+task_commit_matrix:
+  - task: T1.1 ProvenanceSchema (módulo único, DRY)
+    commit: 4351af8
+    status: DONE
+    evidence: "src/core/provenance.ts: ProvenanceSchema (origin enum agent-generated|human-authored, sourceKind enum curl|openapi|endpoint|traffic, sourceRef?, generatedAt); exported via core/index.ts; provenance.test.ts 3 RED tests present"
+  - task: T1.2 provenance? aditivo em Scenario+RunEnvelope + propagação
+    commit: 4351af8
+    status: DONE
+    evidence: "scenarioSchema.ts + runSchema.ts add provenance?.optional() (schemaVersion stays literal(1)); runStore.buildRunEnvelope adds 4th optional param; runScenario propagates scenario.provenance; reviewArtifact.buildReviewArtifact carries env.provenance; provenancePropagation.test.ts (93 LoC) covers Scenario→Run→Review chain"
+  - task: T1.3 draftStore (saveDraft/loadDraft/listDrafts)
+    commit: 90e6e52
+    status: DONE
+    evidence: "src/core/draftStore.ts: DraftSchema=Scenario+provenance OBRIGATÓRIA; saveDraft randomUUID-when-omitted; throws on existing id (EC-1 no silent overwrite); assertSafeId path-traversal guard; loadDraft null-on-absent/throw-on-corrupt; listDrafts []-on-absent-dir + skip-corrupt; stableStringify determinístico; .gitignore comment added; draftStore.test.ts 104 LoC. URL-on-step validation (EC-2) inherited via ScenarioSchema step request .url()"
+  - task: T2.1 tool save_scenario_draft
+    commit: 4b53dd5
+    status: DONE
+    evidence: "mcp/server.ts registerTool('save_scenario_draft', inputSchema={...ScenarioSchema.shape, provenance: ProvenanceSchema (OBRIGATÓRIA)}, outputSchema={draftId,path}); delegates to saveDraft (wiring pillar a = real caller); draftSavedCount metric + console.error stderr (pillar c); draft.test.ts 4 tests inc. does_not_execute_or_approve asserting empty runs/ dir (risco #1) + isError on invalid + metric increment"
+  - task: T3.1 badge gerado pelo agente · pendente
+    commit: 326d4ee
+    status: DONE
+    evidence: "web/render.ts provenanceBadge(env,verdict) only fires origin==='agent-generated', appends '· pendente de revisão' when no verdict (D3 derived state), escapeHtml on sourceKind+sourceRef (XSS herda M2); listing badge via ListingItem.origin; web/server.ts listRuns populates origin from env.provenance?.origin; render.test.ts +6 tests"
+  - task: T4.1 E2E e2e_m4_agent_draft_flows_to_review_marked_pending
+    commit: 48d7910
+    status: DONE
+    evidence: "src/m4-e2e.test.ts: saveDraft→loadDraft origin agent-generated; asserts no reviews/ before verdict; runScenario propagates provenance; web listing contains '🤖 gerado' + 'pendente'; loadReviewArtifact null pre-verdict; POST /verdict 303 → artifact.provenance.origin survives; gitignore asserts drafts/+reviews/ committable, runs/+verdicts/ ignored. CHANGELOG [Unreleased]§Added present. Goal test GREEN in full suite."
+
+acceptance_criteria_summary:
+  total: 6   # one Acceptance block per task
+  satisfied: 6
+  unverified: 0
+  false_claims: 0
+
+# ── Files declared vs changed ──
+file_scope:
+  declared_vs_changed: "All 'Files to edit' per task present in the corresponding commit; no undeclared production-file scope creep. provenancePropagation.test.ts replaces the plan's enumerated per-file *.test.ts for T1.2 (single consolidated test file) — acceptable, same coverage, NOT divergence."
+  scope_creep: none
+
+adr_compliance:
+  total_adrs: 4
+  respected: 4
+  diverged_without_new_adr: 0
+  detail:
+    - adr: D1 (tool validates+persists, no embedded LLM, no sampling round-trip)
+      status: RESPECTED
+      evidence: "save_scenario_draft only calls saveDraft; no LLM, no sampling/createMessage; Tool B curl parser + shell-quote correctly DEFERRED (no shell-quote in package.json)"
+    - adr: D2 (provenance additive/optional, single SoT module, schemaVersion stays 1)
+      status: RESPECTED
+      evidence: "provenance.ts is the single source; both schemas reference it .optional(); schemaVersion z.literal(1) unchanged"
+    - adr: D3 ('pendente' = absence of reviews/{runId}.json; approval only via POST /verdict)
+      status: RESPECTED
+      evidence: "no 'approved' field on draft; no code path writes reviews/ outside postVerdict; E2E + mcp test both assert no reviews/run before human verdict"
+    - adr: D4 (draft in drafts/{id}.json committable, HODOR_DRAFTS_DIR, path-safe)
+      status: RESPECTED
+      evidence: "defaultDraftsDir()=HODOR_DRAFTS_DIR??'drafts'; git check-ignore drafts/ NOT-IGNORED; assertSafeId mirrors reviewArtifact"
+
+plan_drift:
+  plan_edited_after_implement: false
+  details: "Plan committed a9f04b0 (docs(plan) M4 v1.1) BEFORE first impl commit 4351af8. Plan frozen during implement. No mid-flight edit."
+
+# ── ROADMAP §M4 — 3 DoDs → evidence ──
+roadmap_dod_matrix:
+  - dod: "DoD#1 — tool MCP gera cenário candidato (rascunho não-aprovado) de endpoint/(ou)curl/OpenAPI"
+    status: MET (defensible scope read)
+    evidence: "save_scenario_draft persists Scenario+provenance as drafts/{id}.json, never executed/approved. sourceKind records curl|openapi|endpoint|traffic. The actor that 'gera' is the agent (per plan D1 + ROADMAP text 'o agente gera'); the tool validates+persists."
+    note: "See deferred_scope_assessment below — the curl-parser defer is honestly within the DoD wording."
+  - dod: "DoD#2 — gerados entram no fluxo M2/M3 marcados 'gerado, pendente'"
+    status: MET
+    evidence: "provenance propagates Scenario→RunEnvelope→ReviewArtifact (T1.2); web badge '🤖 gerado pelo agente · pendente de revisão' on listing + run view (T3.1); E2E asserts both strings present pre-verdict"
+  - dod: "DoD#3 — humano edita/refina antes de aprovar"
+    status: MET
+    evidence: "draft is a committable JSON file (drafts/ NOT gitignored), zod-validated on load; approval gated exclusively behind POST /verdict (D3). Human can git-edit the draft."
+
+goal_metric:
+  test: e2e_m4_agent_draft_flows_to_review_marked_pending
+  status: GREEN (part of 144/144 passing)
+
+risk_coverage:
+  risk_1_never_auto_approve:
+    proven: true
+    evidence: "TWO independent assertions: (a) m4-e2e.test.ts line 88 loadReviewArtifact===null before POST; line 77 access(reviews/RUN_ID.json) rejects; (b) mcp/draft.test.ts save_scenario_draft_tool_does_not_execute_or_approve asserts empty runs/ dir after tool call. No code path writes reviews/ except postVerdict (web/server.ts). GENUINELY PROVEN."
+  risk_2_not_only_openapi:
+    covered: true
+    evidence: "provenance.sourceKind enum includes curl|endpoint|traffic alongside openapi (Coverage Matrix gap 5 → T1.1). E2E exercises sourceKind:'curl'."
+
+backward_compat_m0_m3:
+  status: PRESERVED
+  evidence: "All provenance fields .optional(); schemaVersion z.literal(1) unchanged; buildRunEnvelope new param last+optional; 144 tests incl. all M0-M3 suites green; existing run_request/run_scenario MCP tools intact"
+
+coverage_matrix_gaps:
+  total: 7
+  resolved: 7
+  detail:
+    "1 (DoD#1 tool)": RESOLVED (T2.1+T1.3+T1.1+T1.2)
+    "2 (DoD#2 marked pending)": RESOLVED (T1.2+T3.1+T4.1)
+    "3 (DoD#3 human edits)": RESOLVED (T1.3+T4.1, committable draft)
+    "4 (risk#1 never auto-approve)": RESOLVED (T4.1+mcp test, D3)
+    "5 (risk#2 not only OpenAPI)": RESOLVED (T1.1 sourceKind)
+    "6 (backward-compat M0-M3)": RESOLVED (T1.2, suite green)
+    "7 (ZERO new dep)": RESOLVED (package.json diff empty; shell-quote deferred)
+
+# ── HONEST assessment of the deferred Tool-B curl parser ──
+deferred_scope_assessment:
+  question: "Tool aceita um cenário já-montado. DoD#1 '(ou curl)' é cumprido SEM o parser determinístico de curl?"
+  verdict: "DEFENSIBLE — not a DoD gap, with one honest caveat (see F-xval-2)."
+  reasoning: |
+    1. ROADMAP DoD#1 reads: 'dado um endpoint (ou OpenAPI/curl de exemplo), O AGENTE gera um
+       cenário candidato'. The generating actor is the AGENT, not the tool. The DoD never
+       mandates a server-side deterministic curl→Scenario parser; it mandates that, given a
+       curl example, a candidate scenario results. The agent (Claude, the MCP client) reads the
+       curl, builds the Scenario, sets provenance.sourceKind='curl', and submits.
+    2. plan ADR D1 + blueprint Rec 8 explicitly DEFER Tool B (scaffold_request_from_curl +
+       shell-quote) under YAGNI/parsimony, with documented revisit trigger. This is a recorded
+       decision, not silent omission — it appears in the ADR alternatives-rejected, the
+       Drawbacks table (row 3), and CHANGELOG.
+    3. provenance.sourceKind='curl' makes the origin auditable, so a reviewer sees the claim
+       'this came from curl' and can verify the agent's parse against the recorded sourceRef.
+  honest_caveat: |
+    The tool does NOT VERIFY that the submitted Scenario actually corresponds to the cited
+    sourceRef (e.g., a curl string). provenance is self-asserted by the agent. So 'from curl'
+    is provable as PROVENANCE-LABELLED, not as MACHINE-PARSED-FROM-CURL. For M4's stated intent
+    (human-in-the-gate review, agent-as-generator) this is acceptable and matches D1; but it is
+    NOT the same as 'the system parses curl'. This is the correct line to call out — recorded
+    as LOW F-xval-2 (advisory, ADR-backed defer; not a blocker).
+
+findings:
+  - id: F-xval-1
+    severity: LOW
+    file: .claude/knowledge-base/audits/m4-scenario-generation-code-quality-2026-06-19.md
+    plan_ref: Global DoD (code-quality PASS gate)
+    summary: "code-quality reported 12 SOFT_FLOOR symbol_fab 'could not verify npm package' on @modelcontextprotocol/sdk subpath imports — all FALSE POSITIVES from the registry verifier, not real fabrications"
+    evidence: |
+      The package @modelcontextprotocol/sdk@1.29.0 is declared and resolves; tsc --noEmit exits 0;
+      144 tests (incl. MCP InMemoryTransport) pass. The verifier cannot resolve deep subpaths
+      (/server/mcp.js etc.) but they are real export-map entries. Verdict PASS_WITH_CAVEATS is
+      correct; 0 HARD caps. No action needed beyond awareness.
+    recommended_action: "No action. Optionally add the SDK subpaths to code-quality allowlist with sunset to silence the noise."
+  - id: F-xval-2
+    severity: LOW
+    file: src/mcp/server.ts (save_scenario_draft) + src/core/provenance.ts
+    plan_ref: ROADMAP §M4 DoD#1 '(ou OpenAPI/curl de exemplo)' + plan ADR D1 deferred scope
+    summary: "provenance.sourceKind is SELF-ASSERTED by the agent; the tool does not parse/verify the cited curl/OpenAPI source. 'From curl' = provenance-labelled, not machine-parsed."
+    evidence: |
+      Tool accepts an already-assembled Scenario and trusts provenance.sourceRef as a string.
+      No determinístico curl→Scenario parser (Tool B / shell-quote) — DEFERRED in ADR D1,
+      blueprint Rec 8, Drawbacks row 3, CHANGELOG. Defer is documented & ADR-backed, so NOT a
+      silent divergence and NOT a blocker. DoD#1 wording ('o agente gera') is satisfied.
+    recommended_action: "Accept as documented M4 scope. Track Tool B revisit trigger for M5+ if review friction emerges (per Drawbacks row 3)."
+
+verdict: READY_TO_MERGE
+blocker_count: 0
+high_count: 0
+medium_count: 0
+low_count: 2
+summary: >
+  Line-by-line cross-validation PASSES. All 6 tasks (T1.1–T4.1) implemented by the
+  expected commits; 6/6 Acceptance blocks satisfied; 4/4 ADRs respected; 7/7 Coverage
+  Matrix gaps resolved; plan frozen during implement (no drift). The 3 ROADMAP §M4 DoDs
+  are empirically demonstrated by the green Goal E2E. Risk #1 (never auto-approve) is
+  genuinely proven by two independent assertions. Risk #2 covered via sourceKind enum.
+  Backward-compat M0-M3 preserved (additive optional fields, schemaVersion:1, 144 tests
+  green). Chain re-run live: vitest 144/144, tsc 0, npm audit 0 vulns, ZERO new deps,
+  drafts/ NOT-ignored, draftStore 94.28% / all-files 92.34% coverage, DIP clean.
+  Deferred curl parser is a DEFENSIBLE, ADR-documented scope decision — DoD#1 ('o agente
+  gera') is met; the only honest caveat (provenance self-asserted, not machine-verified)
+  is recorded as advisory LOW F-xval-2. No BLOCKER, no HIGH, no MEDIUM.

@@ -58,11 +58,35 @@ describe("draftStore", () => {
   });
 
   it("save_draft_accepts_templated_url_step", async () => {
-    // EC-2 (corrigido): url do step pode conter template `${{ var }}` (interpolação M1)
-    // — NÃO é URL válida até resolver; validação de url é deferida ao run-time (executeRequest).
+    // EC-2: url do step pode conter template `${{ var }}` (interpolação M1) — aceito.
     const dir = await tmp();
     const templated = scenario({ steps: [{ name: "s", request: { method: "GET", url: "http://api.test/posts/${{ id }}" } }] });
     await expect(saveDraft(templated, { id: "t", dir })).resolves.toBeTruthy();
+  });
+
+  it("save_draft_rejects_step_with_invalid_url", async () => {
+    // EC-2 (fronteira): url-lixo (sem template e não-URL) → rejeitada fail-fast.
+    const dir = await tmp();
+    const bad = scenario({ steps: [{ name: "s", request: { method: "GET", url: "not a url at all" } }] });
+    await expect(saveDraft(bad, { id: "bad", dir })).rejects.toThrow(/invalid url/);
+  });
+
+  it("save_draft_redacts_sensitive_request_headers", async () => {
+    // F-sec-1: o draft é commitável — Authorization/Cookie no request NÃO podem ir ao git.
+    const dir = await tmp();
+    const withSecret = scenario({
+      provenance: { origin: "agent-generated", sourceKind: "curl", sourceRef: 'curl http://x -H "Authorization: Bearer SECRET-TOKEN"', generatedAt: "2026-06-19T00:00:00.000Z" },
+      steps: [{ name: "s", request: { method: "GET", url: "http://api.test/x", headers: { Authorization: "Bearer SECRET", Cookie: "sid=abc", "x-trace": "ok" } } }],
+    });
+    const { draftId } = await saveDraft(withSecret, { id: "sec", dir });
+    const back = await loadDraft(draftId, dir);
+    expect(back!.steps[0]!.request.headers!["Authorization"]).toBe("<redacted>");
+    expect(back!.steps[0]!.request.headers!["Cookie"]).toBe("<redacted>");
+    expect(back!.steps[0]!.request.headers!["x-trace"]).toBe("ok"); // não-sensível preservado
+    // sourceRef (curl com auth embutida) também redigido (melhor-esforço)
+    expect(back!.provenance.sourceRef).not.toContain("SECRET-TOKEN");
+    // input não mutado
+    expect(withSecret.steps[0]!.request.headers!["Authorization"]).toBe("Bearer SECRET");
   });
 
   it("save_draft_rejects_path_traversal_id", async () => {

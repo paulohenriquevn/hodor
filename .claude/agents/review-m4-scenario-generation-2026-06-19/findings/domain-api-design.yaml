@@ -1,0 +1,219 @@
+agent: review-m4-scenario-generation-domain-api-design
+review_target: main..HEAD for plan m4-scenario-generation
+domain: api-design
+domain_specific_patterns_checked:
+  - "MCP tool contract (inputSchema/outputSchema/structuredContent) — consistency with M0/M1 tools"
+  - "Provenance contract: required-on-tool vs optional-on-ScenarioSchema coherence"
+  - "Tool surface cohesion & naming (save_scenario_draft vs run_scenario vs run_request)"
+  - "Tool description honesty (does NOT execute / does NOT approve)"
+  - "EC-1 'draft already exists' error as an API affordance for the agent"
+  - "provenance.sourceKind enum coverage vs ROADMAP risk #2 (real examples, not only OpenAPI)"
+  - "stderr runtime metric + DIP delegation to core (adapter discipline)"
+  - "Boundary URL validation contract (EC-2) coherence between plan and code"
+
+summary: >
+  The save_scenario_draft MCP tool is well-shaped and consistent with the M0/M1 tool
+  conventions (registerTool + zod inputSchema + outputSchema + structuredContent +
+  stderr metric + 100% delegation to core). No BLOCKER. Two MEDIUM API-contract issues:
+  (1) the EC-1 "draft already exists" collision path is UNREACHABLE through the MCP tool
+  because the handler calls saveDraft(scenario) with no id — every MCP call gets a fresh
+  randomUUID, so the agent can never trigger nor react to it; the error is also a poor API
+  (no suggested id returned). (2) the inputSchema `{...ScenarioSchema.shape, provenance:
+  ProvenanceSchema}` re-derives the draft contract by key-order override instead of using
+  the existing DraftSchema SoT — fragile DRY. Plus LOW items on path leakage and sourceKind
+  coverage. The plan's EC-2 MUST-FIX ("reject step with invalid url") was silently NOT
+  implemented as written (deferred to runtime) — flagged for cross-validation.
+
+findings:
+  - id: F-dom-1
+    severity: MEDIUM
+    file: src/mcp/server.ts
+    line: 116
+    plan_ref: "ADR D4 / plan T1.3 EC-1 — save_draft_does_not_silently_overwrite_existing_id; plan T2.1"
+    domain_anchor: "blueprint Rec 3 — registerTool(save_scenario_draft, {inputSchema, outputSchema:{draftId,path}})"
+    summary: >
+      The MCP handler invokes saveDraft(scenario) with NO options, so the agent can never
+      pass an explicit draftId. Consequently the EC-1 collision contract ("draft already
+      exists") is dead code at the MCP boundary — every tool call gets a fresh randomUUID
+      and never collides. The carefully-built no-silent-overwrite guarantee is invisible to
+      the only production caller (the agent). It is reachable only via direct core calls.
+    evidence: |
+      ```ts
+      // server.ts:116-118 — no id ever forwarded from the tool args
+      async (scenario) => {
+        const { draftId, path } = await saveDraft(scenario);  // options omitted
+      ```
+      ```ts
+      // draftStore.ts:46-58 — collision guard only fires when an explicit id is given
+      const draftId = options.id ?? randomUUID();
+      ...
+      if (await fileExists(path)) {
+        throw new Error(`draft already exists: ${draftId} ...`);
+      }
+      ```
+    recommended_action: >
+      Decide the contract explicitly: either (a) accept an optional `draftId` in the tool
+      inputSchema so the agent can re-save / iterate a named draft and meaningfully hit the
+      EC-1 guard, OR (b) document in the plan/ADR that the MCP surface is UUID-only and the
+      collision guard exists solely for the core/CLI path. As written, the EC-1 MUST-FIX is
+      not exercised by the agent-facing API.
+
+  - id: F-dom-2
+    severity: MEDIUM
+    file: src/mcp/server.ts
+    line: 113
+    plan_ref: "ADR D2/D4 — DraftSchema = ScenarioSchema.extend({ provenance: ProvenanceSchema })"
+    domain_anchor: "draftStore.ts:18 — DraftSchema is the single source of truth for the draft contract"
+    summary: >
+      The tool inputSchema re-derives the draft contract as
+      `{ ...ScenarioSchema.shape, provenance: ProvenanceSchema }`. ScenarioSchema.shape
+      ALREADY contains `provenance: ProvenanceSchema.optional()` (scenarioSchema.ts:56), so
+      this works only because the later spread key overrides the earlier optional one.
+      The canonical contract DraftSchema (draftStore.ts:18) already expresses exactly this
+      ("Scenario with required provenance"); duplicating it inline by key-order override is
+      fragile DRY — if ProvenanceSchema or ScenarioSchema changes, the two definitions can
+      silently diverge.
+    evidence: |
+      ```ts
+      // server.ts:113
+      inputSchema: { ...ScenarioSchema.shape, provenance: ProvenanceSchema },
+      ```
+      ```ts
+      // draftStore.ts:18 — the SoT that should be reused
+      export const DraftSchema = ScenarioSchema.extend({ provenance: ProvenanceSchema });
+      ```
+    recommended_action: >
+      Use `inputSchema: DraftSchema.shape` so the MCP boundary contract is the same object
+      as the persistence-layer contract (single source of truth, DRY). This also makes the
+      "provenance required at the tool, optional on the bare Scenario" relationship explicit
+      and self-documenting rather than implicit in spread order.
+
+  - id: F-dom-3
+    severity: MEDIUM
+    file: src/core/draftStore.ts
+    line: 57
+    plan_ref: "plan T1.3 EC-1 — 'Sobrescrita intencional exige id novo' / focus question #5"
+    domain_anchor: "blueprint D1 — tool é determinística; o agente reage ao resultado"
+    summary: >
+      The "draft already exists" error is a string-only error with no machine-actionable
+      affordance. An agent that DID hit this (if F-dom-1 is fixed to accept an id) gets a
+      free-text message and must invent a new id by itself. Good API design here would return
+      a structured error or a suggested fresh id so the agent can retry deterministically
+      instead of re-prompting itself.
+    evidence: |
+      ```ts
+      // draftStore.ts:57
+      throw new Error(`draft already exists: ${draftId} (use a new id to avoid overwriting a candidate)`);
+      ```
+    recommended_action: >
+      If the explicit-id path is exposed (F-dom-1), make the failure actionable: either
+      return a suggested id (e.g. `${draftId}-2` or a randomUUID) in a typed error, or have
+      the tool fall back to randomUUID on collision and report `regenerated: true` in
+      structuredContent. As-is the error is honest but not agent-friendly.
+
+  - id: F-dom-4
+    severity: LOW
+    file: src/mcp/server.ts
+    line: 114
+    plan_ref: "blueprint Rec 3 — outputSchema {draftId, path}"
+    domain_anchor: "architecture.md §2 — adapters should not leak infra-specific detail to clients"
+    summary: >
+      The tool returns the on-disk `path` (e.g. `drafts/<uuid>.json`, or an absolute path
+      when HODOR_DRAFTS_DIR is absolute) to the MCP client. The `draftId` is the stable,
+      portable handle the agent needs; `path` exposes server filesystem layout that the
+      agent cannot meaningfully act on (it cannot read arbitrary files via MCP). For a local
+      single-user tool this is low-risk, but it is an unnecessary infra detail in the public
+      tool contract and could mislead the agent into treating `path` as something it can open.
+    evidence: |
+      ```ts
+      outputSchema: { draftId: z.string(), path: z.string() },
+      ...
+      structuredContent: { draftId, path },
+      ```
+    recommended_action: >
+      Keep `draftId` as the primary handle. Consider dropping `path` from the agent-facing
+      output (keep it only in the stderr metric, which is operator-facing), or rename/scope
+      it (e.g. `relativePath`) and guarantee it is repo-relative so it is safe to surface and
+      git-add. Document intent either way.
+
+  - id: F-dom-5
+    severity: LOW
+    file: src/core/provenance.ts
+    line: 14
+    plan_ref: "Coverage Matrix #5 / ROADMAP risk #2 — suportar exemplos reais (curl/traffic)"
+    domain_anchor: "blueprint T1/T3 — sourceKind registra de ONDE veio"
+    summary: >
+      sourceKind enum is `curl | openapi | endpoint | traffic`. This covers ROADMAP risk #2.
+      Two real-world sources have no slot: HAR captures (common 'traffic' export format, but
+      'traffic' is ambiguous about format) and a generic `manual`/`other` for the human-authored
+      case (`origin: human-authored` has no honest sourceKind today — a hand-written scenario
+      is forced to claim curl/openapi/endpoint/traffic). The enum being closed means a
+      human-authored draft cannot express "I just typed this".
+    evidence: |
+      ```ts
+      sourceKind: z.enum(["curl", "openapi", "endpoint", "traffic"]),
+      ```
+      provenance.test.ts asserts an unknown sourceKind is rejected — so the enum is hard-closed.
+    recommended_action: >
+      Confirm with the human whether `human-authored` provenance is ever produced in M4; if so,
+      add a `manual` (or `other`) sourceKind so hand-authored drafts are not forced to lie.
+      Optionally add `har` if HAR is a planned ingestion path. Adding enum values is additive /
+      backward-compatible (no schemaVersion bump). HONESTLY HEURISTIC: I cannot tell from the
+      plan whether human-authored drafts are in scope for M4 — flagging for human confirmation.
+
+  - id: F-dom-6
+    severity: LOW
+    file: src/core/scenarioSchema.ts
+    line: 44
+    plan_ref: "plan v1.1 header + T1.3 — EC-2: 'url do step validada na fronteira do draft'"
+    domain_anchor: "plan T1.3 RED save_draft_rejects_step_with_invalid_url; runSchema.ts:15 CapturedRequestSchema.url .url()"
+    summary: >
+      The plan (v1.1 header, T1.3, Coverage note) explicitly states EC-2 was absorbed as a
+      MUST-FIX: the step url is validated at the draft boundary, "alinha com
+      CapturedRequestSchema.url .url() do runSchema.ts:14", with RED test
+      `save_draft_rejects_step_with_invalid_url`. The implementation does the OPPOSITE:
+      ScenarioStepSchema.request.url is `z.string()` (NOT `.url()`), and the actual test is
+      `save_draft_accepts_templated_url_step` (draftStore.test.ts:60) which asserts a
+      templated url is ACCEPTED, deferring url validation to runtime. This is a defensible
+      decision (M1 templated `${{ var }}` urls are not valid URLs until resolved), but the
+      plan was not updated to match — the documented draft-boundary contract diverges from
+      the shipped contract.
+    evidence: |
+      ```ts
+      // scenarioSchema.ts:41-45 — step url is a plain string, no .url()
+      request: z.object({ method: z.string(), url: z.string(), ... })
+      ```
+      ```ts
+      // draftStore.test.ts:60-66 — ships the inverse of the plan's RED test
+      it("save_draft_accepts_templated_url_step", async () => { ... resolves.toBeTruthy(); });
+      ```
+    recommended_action: >
+      This is primarily a cross-validation/plan-fidelity defect (the API behavior is
+      reasonable). Either (a) update the plan/ADR to record that EC-2 was resolved by
+      DEFERRING url validation to runtime to preserve M1 templating, or (b) if strict boundary
+      validation is wanted, validate only non-templated urls (skip strings containing `${{`).
+      Coordinate with the cross-validation reviewer — do not silently leave plan and code
+      disagreeing.
+
+  - id: F-dom-7
+    severity: INFO
+    file: src/mcp/server.ts
+    line: 110
+    plan_ref: "focus question #4 — a tool deixa claro que NÃO executa nem aprova"
+    domain_anchor: "blueprint D1/D3 — nunca executa, nunca aprova"
+    summary: >
+      POSITIVE finding. Tool title ("Save scenario draft (agent-generated)") and description
+      explicitly state it persists a non-approved candidate, does NOT execute, does NOT
+      approve, and that approval is the human verdict (M2/M3). The naming triad
+      (run_request / run_scenario / save_scenario_draft) cleanly separates execution verbs
+      from the persistence verb, so the agent can disambiguate intent. stderr metric +
+      structuredContent + outputSchema match the M0/M1 convention exactly. DIP preserved
+      (delegates 100% to core saveDraft). No change required.
+    evidence: |
+      ```ts
+      description:
+        "Persiste um cenário CANDIDATO gerado pelo agente como rascunho não-aprovado em
+         drafts/{id}.json (commitável). NÃO executa nem aprova — a aprovação é o verdict
+         humano (M2/M3).",
+      ```
+    recommended_action: "None — keep as the reference pattern for future persistence tools."
