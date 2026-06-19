@@ -8,6 +8,8 @@ import {
   RunEnvelopeSchema,
   runScenario,
   ScenarioSchema,
+  ProvenanceSchema,
+  saveDraft,
 } from "../core/index.js";
 
 /**
@@ -25,6 +27,11 @@ export function getRunCount(): number {
 let scenarioRunCount = 0;
 export function getScenarioRunCount(): number {
   return scenarioRunCount;
+}
+
+let draftSavedCount = 0;
+export function getDraftSavedCount(): number {
+  return draftSavedCount;
 }
 
 /** Constrói o McpServer configurado (sem conectar) — permite teste in-memory. */
@@ -90,6 +97,32 @@ export function buildServer(): McpServer {
       return {
         content: [{ type: "text" as const, text: JSON.stringify(env, null, 2) }],
         structuredContent: env,
+      };
+    },
+  );
+
+  // M4 — tool de geração assistida (ADR D1). O AGENTE (cliente MCP) monta o
+  // Scenario; esta tool VALIDA + PERSISTE como DRAFT (não executa, não aprova).
+  // `provenance` é OBRIGATÓRIA aqui (um draft sempre tem origem).
+  server.registerTool(
+    "save_scenario_draft",
+    {
+      title: "Save scenario draft (agent-generated)",
+      description:
+        "Persiste um cenário CANDIDATO gerado pelo agente como rascunho não-aprovado em drafts/{id}.json (commitável). NÃO executa nem aprova — a aprovação é o verdict humano (M2/M3).",
+      inputSchema: { ...ScenarioSchema.shape, provenance: ProvenanceSchema },
+      outputSchema: { draftId: z.string(), path: z.string() },
+    },
+    async (scenario) => {
+      // Caller de produção de saveDraft (wiring triad pillar a). Delega ao core.
+      const { draftId, path } = await saveDraft(scenario);
+      draftSavedCount += 1;
+      console.error(
+        JSON.stringify({ event: "save_scenario_draft", draftId, origin: scenario.provenance.origin, path }),
+      );
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ draftId, path }, null, 2) }],
+        structuredContent: { draftId, path },
       };
     },
   );
