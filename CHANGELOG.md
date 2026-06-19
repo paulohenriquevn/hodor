@@ -7,6 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ## [Unreleased]
 
 ### Added
+- **M5 — Regressão: diff entre runs + anti-flaky:** o sistema compara o run atual com o anterior do mesmo cenário e destaca mudanças de comportamento (status/headers/body) na web app (`GET /runs/:id/diff`). Normalização de campos voláteis em duas camadas, com regras **inspecionáveis**: headers/timings via `normalizeRun` (M3) + **corpo da resposta** via regras de `noise` (jsonpaths) declaradas no cenário (`noise?: string[]`, aditivo) e mascaradas com sentinela visível `"<noise>"` (`maskNoise`, reusa `jsonpath-plus`). Identidade de cenário (`scenarioKey` = `name` ou hash dos `{method,url}`) agrupa o histórico comparável; retenção **last-N por cenário** (`HODOR_RUN_HISTORY_LIMIT`, default 10) evita crescimento ilimitado — e **nunca descarta um run aprovado** (com verdict). Fecha a limitação de body-noise deferida no M3. Campos opcionais (`schemaVersion:1` preservado) — cenários/runs M0-M4 seguem válidos. ZERO dependência nova.
 
 ### Changed
 
