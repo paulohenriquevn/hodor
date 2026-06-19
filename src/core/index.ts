@@ -41,8 +41,17 @@ export {
   type Verdict,
 } from "./verdict.js";
 
-// M4 — proveniência (geração de cenários)
+// M4 — proveniência + draft store (geração de cenários)
 export { ProvenanceSchema, type Provenance } from "./provenance.js";
+export {
+  DraftSchema,
+  saveDraft,
+  loadDraft,
+  listDrafts,
+  defaultDraftsDir,
+  type Draft,
+  type SaveDraftOptions,
+} from "./draftStore.js";
 
 // M3 — persistência versionável
 export { stableStringify } from "./stableStringify.js";
