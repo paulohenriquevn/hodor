@@ -1,0 +1,240 @@
+agent: review-m2-review-webapp-tests
+review_target: develop @ bafafbd for plan m2-review-webapp
+plan: .claude/knowledge-base/plans/m2-review-webapp-plan.md
+date: 2026-06-18
+
+suite_status:
+  command: npx vitest run
+  result: PASS
+  test_files: 17
+  tests: 87
+  duration_ms: 752
+  m0_m1_backward_compat: GREEN (e2e.test.ts, scenario-e2e.test.ts, runSchema/render/scenario suites all pass)
+
+coverage:
+  command: npx vitest run --coverage
+  verdict_ts: { stmts: 92.30, branch: 83.33, funcs: 100, lines: 91.66, uncovered: "46", meets_90_lines: true }
+  render_ts: { stmts: 95.23, branch: 87.50, funcs: 100, lines: 98.11, uncovered: "76", meets_90_lines: true }
+  runStore_ts: { stmts: 100, branch: 90, funcs: 100, lines: 100, meets_90_lines: true }
+  server_ts:
+    note: >
+      EXCLUDED from the project coverage config (vitest.config.ts coverage.exclude
+      includes "src/**/server.ts"). Measured out-of-band via a throwaway config:
+      82.65% stmts / 74% branch / 80.68% lines. The single largest NEW surface of
+      M2 (listing, POST routing, form parsing, 404/400/405, body-cap) is hidden
+      from the gate metric.
+    measured_out_of_band: { stmts: 82.65, branch: 74, lines: 80.68, uncovered_regions: "40 (500-catch), 158 (listRuns readdir-fail), 196-206 (main bootstrap)" }
+  plan_requirement: ">= 90% in verdict.ts and pickRenderer/render.ts — MET for the in-scope files; server.ts deliberately out of scope of the metric."
+
+test_pyramid:
+  unit_added: 16   # verdict(4) + pickRenderer/truncate(6) + runStore-name(2) + render M2 verdict(2) + render M1/escape reused
+  integration_added: 12  # server.test.ts via real fetch + real fs tmpdirs
+  e2e_added: 1     # review-e2e.test.ts (full loop)
+  total_m2: ~29
+  shape: healthy (wide unit base, real-boundary integration via fetch, single E2E) — NOT inverted
+
+edge_cases_from_plan:
+  covered:
+    - "EC-1 escape note/verdict (render_verdict_escapes_note, render_run_escapes_assert_values, render_run_escapes_html_in_body)"
+    - "EC-2 corrupt run file skipped in listing (listing_skips_corrupt_run_file -> 200 not 500)"
+    - "EC-3 missing verdict field -> 400 (post_verdict_missing_field_is_400)"
+    - "path-traversal :id -> 400 on GET and POST (web_server_rejects_path_traversal_id, post_verdict_traversal_id_is_400)"
+    - "404 missing run on GET and POST (web_server_returns_404_for_missing_run, post_verdict_missing_run_is_404)"
+    - "405 on disallowed method with Allow header (web_server_returns_405_with_allow_header)"
+    - "verdict round-trip + null-when-absent + invalid-value-rejected (verdict store unit)"
+    - "backward-compat envelope without name (build_run_envelope_omits_name_when_absent)"
+  missing:
+    - "render-layer binary-omission string '(binary omitted ...)' — pickRenderer returns 'binary' is unit-tested but bodyBlock's actual rendered output is never asserted (risk #2 mitigation behavior unverified at render layer)"
+    - "render-layer truncation NOTICE '(truncado — exibindo N de M bytes)' — truncate() unit-tested but its rendered HTML notice is never asserted (risk #2 mitigation behavior unverified at render layer)"
+    - "pickRenderer 'javascript', 'x-www-form-urlencoded', '+xml', '+json' text branches — plan T1.3 lists these explicitly; tests only cover text/html and application/xml"
+    - "JSON pretty-print + non-parseable-JSON fallback (render.ts:72-77, line 76 uncovered) — no test asserts JSON body is reformatted, nor the catch fallback"
+    - "POST body-size cap (1 MB -> 'body too large') — readBody rejects oversized body; no test exercises it (Deep Dives T2.2 + Drawbacks risk #2)"
+
+findings:
+  - id: F-tests-1
+    severity: HIGH
+    file: vitest.config.ts
+    line: 11
+    plan_ref: "Final Phase Acceptance — 'Coverage >= 90%'; testing.md §1 (coverage measures behavior)"
+    summary: >
+      Coverage config excludes "src/**/server.ts", hiding the largest NEW M2 surface
+      (web adapter) from the gate metric. The reported 96% global / 98% render is
+      computed with the web server invisible; its real coverage is 82.65% stmts /
+      74% branch with the 500-error path and the listRuns readdir-failure path
+      untested.
+    evidence: |
+      vitest.config.ts: coverage.exclude = ["src/**/*.test.ts", "src/**/server.ts"]
+      Out-of-band measurement (temp config, server.ts only):
+        server.ts | 82.65 | 74 | 80.68 | uncovered: 40, 158, 196-206
+      server.test.ts + review-e2e.test.ts DO import buildWebServer, so the file is
+      executed — it is excluded from the report by config, not by lack of tests.
+    recommended_action: >
+      Narrow the exclude to only the bootstrap (e.g. exclude the main()/import.meta
+      block via an istanbul-ignore on lines 195-208, or exclude "src/mcp/server.ts"
+      specifically) so the web adapter's branch coverage is visible in the gate.
+      Then add tests for the two real gaps below (F-tests-2, F-tests-5).
+
+  - id: F-tests-2
+    severity: HIGH
+    file: src/web/render.test.ts
+    line: 0
+    plan_ref: "Failure scenarios table row 4 (risk #2); ADR D2; T1.3 Deep Dives 'binário nunca embutido'"
+    summary: >
+      The risk-#2 mitigation BEHAVIOR (binary omitted, large text truncated WITH
+      notice) is only unit-tested at the pure helper level (pickRenderer/truncate).
+      No test asserts the rendered HTML actually omits a binary body or shows the
+      truncation notice. A regression in bodyBlock (e.g. embedding a binary body or
+      dropping the notice) would pass all current tests.
+    evidence: |
+      grep "binary omitted|truncado|binário" src/web/render.test.ts -> 0 matches
+      render.ts:64-83 bodyBlock builds "(binary omitted — content-type: X)" and the
+      truncation "(truncado — exibindo ...)" notice; neither string is asserted.
+      render.ts:76 (non-parseable JSON fallback) is reported uncovered.
+    recommended_action: >
+      Add renderRun-level assertions: (a) a step with content-type image/png renders
+      "(binary omitted" and NOT the raw body bytes; (b) a >64KB text body renders the
+      "(truncado" notice and a <pre> of length MAX_BODY; (c) a malformed JSON body
+      with application/json content-type renders escaped raw (catch fallback).
+
+  - id: F-tests-3
+    severity: MEDIUM
+    file: src/web/pickRenderer.test.ts
+    line: 10
+    plan_ref: "T1.3 Deep Dives — 'javascript', 'x-www-form-urlencoded' -> text"
+    summary: >
+      pickRenderer text-branch is under-tested. The plan explicitly lists javascript,
+      x-www-form-urlencoded, +xml, +json as text/json branches, but only text/html
+      and application/xml are asserted. The TEXTUAL regex alternatives go unverified.
+    evidence: |
+      pickRenderer.test.ts asserts: application/json, +json, text/html, application/xml,
+      image/png, octet-stream, undefined, APPLICATION/JSON, TEXT/PLAIN.
+      Missing: application/javascript, application/x-www-form-urlencoded, image/svg+xml,
+      and the "+json" vendor case is covered but "+xml" text-branch is not.
+    recommended_action: >
+      Add pick_renderer cases for application/javascript -> text,
+      application/x-www-form-urlencoded -> text, and a "+xml" content-type -> text.
+
+  - id: F-tests-4
+    severity: MEDIUM
+    file: src/web/server.ts
+    line: 119
+    plan_ref: "testing.md §6 — 'Time/randomness in unit tests — inject a clock/RNG'"
+    summary: >
+      The POST verdict path stamps decidedAt with new Date().toISOString() (wall
+      clock), not an injected clock like the rest of the core (buildRunEnvelope takes
+      now()). No test asserts decidedAt at all on the POST path, so the only field
+      produced non-deterministically by the web layer is both unverified and
+      untestable deterministically.
+    evidence: |
+      server.ts:119  decidedAt: new Date().toISOString()
+      grep "decidedAt" src/web/server.test.ts src/review-e2e.test.ts -> 0 matches
+      (core verdict.test.ts uses a fixed decidedAt fixture, but the production POST
+      caller hard-codes wall-clock time).
+    recommended_action: >
+      Assert in post_verdict_persists_and_redirects that the persisted verdict has a
+      decidedAt that parses as a valid ISO-8601 string (Date.parse not NaN). Longer
+      term, thread an injectable clock into postVerdict to match the core's pattern.
+
+  - id: F-tests-5
+    severity: LOW
+    file: src/web/server.test.ts
+    line: 0
+    plan_ref: "T2.2 Deep Dives — 'cap de tamanho do body (ex. 1 MB)'; Drawbacks risk #2"
+    summary: >
+      readBody enforces a 1 MB cap (rejects -> surfaces as 500), but no test exercises
+      an oversized body. The cap is a stated mitigation; its behavior is unverified.
+    evidence: |
+      server.ts:131-147 readBody rejects when size > MAX_BODY_BYTES (1 MB).
+      grep "too large|MAX_BODY|1024" src/web/server.test.ts -> 0 matches.
+      server.ts line 40 region (500 catch) reported uncovered.
+    recommended_action: >
+      Add a test POSTing a >1MB body and assert a non-2xx/3xx response (current code
+      yields 500 — consider 413; either way pin the behavior).
+
+  - id: F-tests-6
+    severity: LOW
+    file: src/web/server.test.ts
+    line: 0
+    plan_ref: "T2.1 Deep Dives — listRuns readdir; 'nenhum run -> no runs yet'"
+    summary: >
+      listRuns wraps readdir in try/catch returning [] when the runs dir is missing
+      (server.ts:154-159). The empty-dir case is tested (web_server_root_shows_no_runs_when_empty)
+      but the missing-dir / readdir-failure branch (server.ts:158) is untested.
+    evidence: |
+      server.ts:158 'return []' on readdir failure — reported uncovered.
+      Tests always create the tmpdir in beforeEach, so readdir never throws.
+    recommended_action: >
+      Add a test that points buildWebServer at a non-existent dir and asserts GET /
+      returns 200 with "no runs yet" (graceful, not 500).
+
+  - id: F-tests-7
+    severity: LOW
+    file: src/core/verdict.test.ts
+    line: 37
+    plan_ref: "T1.2 Deep Dives — 'arquivo inválido -> lança (fail-loud)'"
+    summary: >
+      verdict store has a fail-loud path: loadVerdict on a corrupt verdict file (not
+      ENOENT) must THROW (verdict.ts:48 VerdictSchema.parse on malformed JSON). Tests
+      cover null-when-absent and invalid-on-save, but not the corrupt-file-on-load
+      throw. verdict.ts:46 (non-ENOENT rethrow) is the reported uncovered line.
+    evidence: |
+      verdict.ts:42-48 loadVerdict — ENOENT -> null; any other read error rethrown;
+      malformed JSON / schema-invalid content -> VerdictSchema.parse throws.
+      verdict.test.ts has no "load_verdict_rejects_corrupt_file" case.
+      Coverage uncovered line for verdict.ts is 46.
+    recommended_action: >
+      Add load_verdict_rejects_corrupt_file: write "{ not json" (or a schema-invalid
+      object) to verdicts/<id>.json, assert loadVerdict rejects (mirrors the existing
+      runStore load_run_rejects_invalid_file test).
+
+  - id: F-tests-8
+    severity: LOW
+    file: .claude/agents/review-m2-review-webapp-2026-06-18 (commit history)
+    line: 0
+    plan_ref: "Tests reviewer checklist §2 — verify test committed BEFORE implementation"
+    summary: >
+      TDD RED-before-GREEN order cannot be verified from git history: each task group
+      landed tests + implementation in a single commit (ec2928b for T1.1-T1.3,
+      41e8b0f for T2.1-T2.2, a3d7bd8 for E2E). Tests are behavior-grade so this is not
+      a quality defect in the tests themselves, only an unverifiable-process note.
+    evidence: |
+      git log --diff-filter=A -- src/core/verdict.test.ts src/core/verdict.ts
+        -> both first appear in ec2928b (same commit)
+      git log -- src/web/server.test.ts src/web/server.ts -> M2 changes both in 41e8b0f
+    recommended_action: >
+      No action on the tests. For future cycles, commit the RED test separately from
+      the GREEN implementation so the halt-loop's TDD discipline is auditable.
+
+  - id: F-tests-9
+    severity: LOW
+    file: src/web/render.test.ts
+    line: 56
+    plan_ref: "testing.md §6 — avoid asserting on brittle internal structure"
+    summary: >
+      render_run_iterates_multiple_steps counts occurrences of the literal "Step "
+      via html.split. This is brittle: it couples the test to the exact heading text
+      and would also match any other "Step " substring (e.g. in CSS or copy). Asserts
+      structure, not behavior.
+    evidence: |
+      render.test.ts:59  const occurrences = html.split("Step ").length - 1;
+    recommended_action: >
+      Assert the two distinct step bodies are present (e.g. both step URLs/markers)
+      rather than counting a heading substring.
+
+skipped_or_commented_tests: none ( grep .only/.skip/xit/xtest/fit -> 0 matches )
+flaky_signals: none observed (suite deterministic; tmpdirs per-test with afterEach cleanup; injected clock/id in core)
+fixture_hygiene: GOOD (server.test.ts + verdict.test.ts + review-e2e.test.ts all create per-test tmpdirs and clean up in afterEach; server closed in afterEach; no shared mutable state, no order dependency)
+
+summary:
+  blockers: 0
+  high: 2     # F-tests-1 (coverage blind-spot on web server), F-tests-2 (risk-#2 render behavior unverified)
+  medium: 2   # F-tests-3 (pickRenderer text branches), F-tests-4 (decidedAt non-deterministic + unasserted)
+  low: 5
+  verdict_recommendation: >
+    NEEDS_FIXES — no BLOCKER, but 2 HIGH findings. The suite is green, fixtures are
+    clean, edge cases EC-1/EC-2/EC-3/traversal/404 are genuinely covered, and the
+    pyramid is healthy. However the coverage gate is blind to the web server
+    (F-tests-1) and the risk-#2 mitigation (binary omission + truncation) is only
+    verified at the pure-helper layer, never at the render output the user actually
+    sees (F-tests-2). Both should be addressed before READY_TO_MERGE; the 2 MEDIUM +
+    5 LOW are tightenings that can ride along.

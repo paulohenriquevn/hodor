@@ -106,3 +106,63 @@ describe("renderRun (M1 — asserts/captures)", () => {
     expect(html).not.toContain("<h3>Asserts</h3>");
   });
 });
+
+describe("renderRun (M2 — verdict)", () => {
+  it("render_run_shows_verdict_form_and_pending_when_no_verdict", () => {
+    const html = renderRun(envelope([step()]));
+    expect(html).toContain("verdict-form");
+    expect(html).toContain("pendente");
+  });
+
+  it("render_run_omits_binary_body", () => {
+    // F-tests-2: content-type binário → conteúdo NÃO embutido (só metadados)
+    const html = renderRun(
+      envelope([
+        step({
+          response: {
+            status: 200,
+            statusText: "OK",
+            headers: { "content-type": "image/png" },
+            body: "\x89PNG\r\n\x1a\nBINARYDATA",
+            timings: { startedAt: "2026-06-18T00:00:00.000Z", durationMs: 1 },
+          },
+        }),
+      ]),
+    );
+    expect(html).toContain("binary omitted");
+    expect(html).toContain("image/png");
+    expect(html).not.toContain("BINARYDATA");
+  });
+
+  it("render_run_truncates_large_text_body", () => {
+    const big = "y".repeat(100_000);
+    const html = renderRun(
+      envelope([
+        step({
+          response: {
+            status: 200,
+            statusText: "OK",
+            headers: { "content-type": "text/plain" },
+            body: big,
+            timings: { startedAt: "2026-06-18T00:00:00.000Z", durationMs: 1 },
+          },
+        }),
+      ]),
+    );
+    expect(html).toContain("truncado");
+    expect(html).toContain("100000"); // tamanho original no aviso
+  });
+
+  it("render_verdict_escapes_note", () => {
+    // EC-1: note é input do humano → deve ser escapada (anti-XSS armazenado)
+    const html = renderRun(envelope([step()]), {
+      runId: "run-1",
+      verdict: "rejected",
+      note: "<script>alert(1)</script>",
+      decidedAt: "2026-06-18T00:00:00.000Z",
+    });
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("rejected");
+  });
+});

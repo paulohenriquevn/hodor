@@ -1,0 +1,161 @@
+agent: review-m2-review-webapp-wiring
+review_target: main..HEAD for plan m2-review-webapp (commits ec2928b, 41e8b0f, a3d7bd8)
+plan: .claude/knowledge-base/plans/m2-review-webapp-plan.md
+verdict: READY_TO_MERGE
+summary: >
+  Wiring triad is HONEST for every functionally-required new symbol. saveVerdict,
+  loadVerdict, defaultVerdictsDir, pickRenderer, truncate, renderListing all have a
+  REAL production caller (verified by grep, classified prod vs test) and are exercised
+  by integration + E2E tests. verdictForm/verdictBadge are internal (not exported),
+  called by renderRun. The observable (pillar c) — verdict persisted, loadVerdict != null —
+  is genuinely exercised end-to-end in review-e2e.test.ts (asserts v.verdict === "approved").
+  GET / contract change (302 redirect → 200 listing) is real and integrated into the live
+  route. No BLOCKER, no HIGH. Three MEDIUM dead/over-broad exports (VerdictSchema, escapeHtml,
+  pickRenderer/truncate export surface) — non-blocking, cleanup recommended.
+
+triad_revalidation:
+  total_new_exported_symbols: 7   # saveVerdict, loadVerdict, defaultVerdictsDir, VerdictSchema, Verdict(type), pickRenderer, truncate, renderListing, ListingItem(type), escapeHtml(pre-existing re-eval)
+  pillar_a_honest_pass: "5 / 5 (functionally-required runtime symbols: saveVerdict, loadVerdict, defaultVerdictsDir, pickRenderer, truncate, renderListing — all have a real, non-no-op production caller)"
+  pillar_b_honest_pass: "5 / 5 (each is called in the Act phase of an integration/unit test, not merely imported)"
+  pillar_c_observed: "1 / 1 (verdict persisted; loadVerdict != null asserted in review-e2e.test.ts:78-80 and server.test.ts:124-126)"
+  contract_change_verified: "GET / : 302 redirect (M1, ec2928b~1 server.ts:75) → 200 listing (server.ts:71-73). Integrated, tested (web_server_root_lists_runs, web_server_root_shows_no_runs_when_empty, E2E)."
+
+per_symbol_classification:
+  saveVerdict:
+    export: "src/core/verdict.ts:25 (re-exported src/core/index.ts:38)"
+    prod_caller: "src/web/server.ts:122 (postVerdict — real await call inside POST /runs/:id/verdict handler)"
+    test_caller: "verdict.test.ts:27,33,45 ; server.test.ts (POST cases) ; e2e via POST"
+    pillar_a: HONEST_PASS
+  loadVerdict:
+    export: "src/core/verdict.ts:37 (re-exported index.ts:39)"
+    prod_caller: "src/web/server.ts:82 (GET /runs/:id) AND src/web/server.ts:173 (listRuns)"
+    test_caller: "verdict.test.ts:34,39 ; server.test.ts:124,137 ; review-e2e.test.ts:78"
+    pillar_a: HONEST_PASS
+  defaultVerdictsDir:
+    export: "src/core/verdict.ts:20 (re-exported index.ts:40)"
+    prod_caller: "src/web/server.ts:36 (buildWebServer default param) ; verdict.ts:27,39 (default params)"
+    pillar_a: HONEST_PASS
+  pickRenderer:
+    export: "src/web/render.ts:43 (NOT re-exported in index.ts)"
+    prod_caller: "src/web/render.ts:66 (bodyBlock — real dispatch)"
+    test_caller: "pickRenderer.test.ts (10 assertions)"
+    pillar_a: HONEST_PASS
+    note: "Exported but only the TEST imports the export; production usage is intra-module. Export visibility broader than needed — see F-wire-3."
+  truncate:
+    export: "src/web/render.ts:51 (NOT re-exported in index.ts)"
+    prod_caller: "src/web/render.ts:70 (bodyBlock)"
+    test_caller: "pickRenderer.test.ts:30,37"
+    pillar_a: HONEST_PASS
+    note: "Same export-surface observation as pickRenderer — F-wire-3."
+  renderListing:
+    export: "src/web/render.ts:221 (NOT re-exported in index.ts)"
+    prod_caller: "src/web/server.ts:73 (GET /)"
+    pillar_a: HONEST_PASS
+  verdictForm:
+    export: "INTERNAL (not exported) — src/web/render.ts:151"
+    prod_caller: "src/web/render.ts:206 (renderRun)"
+    pillar_a: HONEST_PASS
+  verdictBadge:
+    export: "INTERNAL (not exported) — src/web/render.ts:143"
+    prod_caller: "src/web/render.ts:205 (renderRun)"
+    pillar_a: HONEST_PASS
+
+findings:
+  - id: F-wire-1
+    severity: MEDIUM
+    file: src/core/index.ts
+    line: 37
+    plan_ref: T1.2 — "Exportar em index.ts" / Anti-pattern #5 (dead exports)
+    summary: >
+      VerdictSchema is re-exported from the core public surface (index.ts:37) but has
+      ZERO consumer outside its own module — no production importer, no test importer.
+    evidence: |
+      grep -rn "VerdictSchema" src/ --include="*.ts":
+        src/core/verdict.ts (definition + intra-module .parse calls)
+        src/core/index.ts:37 (re-export)
+        src/web/server.ts:116 (a COMMENT, not a usage)
+      No .test.ts imports VerdictSchema. The web boundary validates indirectly via
+      saveVerdict (which calls VerdictSchema.parse internally) — it never references
+      the schema export. So the public re-export is dead.
+    recommended_action: >
+      Either (a) drop VerdictSchema from index.ts (keep saveVerdict/loadVerdict/Verdict
+      type — the actual boundary API), or (b) keep it intentionally as planned public
+      API and add an ADR note that it's a forward-looking export for M3 versioning.
+      Non-blocking; code-quality D3 (cross-package wiring) is the right gate to enforce.
+
+  - id: F-wire-2
+    severity: MEDIUM
+    file: src/web/render.ts
+    line: 30
+    plan_ref: rules/cycle-review.md §3 (dead exports) ; Anti-pattern #5
+    summary: >
+      escapeHtml is exported from render.ts but has no consumer outside render.ts
+      (neither production nor test). Pre-existing (M0/M1) but re-confirmed dead in M2.
+    evidence: |
+      grep -rn "escapeHtml" src/ --include="*.ts" returns only src/web/render.ts lines.
+      No external prod importer, no test importer. Used heavily INTRA-module (headersTable,
+      bodyBlock, verdictBadge, renderListing, etc.) so it is NOT removable as code — only
+      the `export` keyword is unjustified.
+    recommended_action: >
+      Drop the `export` on escapeHtml (make it module-private) unless a test is intended
+      to cover it directly — in which case add the missing escapeHtml unit test (XSS escape
+      is security-relevant and currently only covered transitively via render output asserts).
+
+  - id: F-wire-3
+    severity: MEDIUM
+    file: src/web/render.ts
+    line: 43
+    plan_ref: T1.3 — "pickRenderer exportado para teste"
+    summary: >
+      pickRenderer (render.ts:43) and truncate (render.ts:51) are exported solely so the
+      unit test can import them; production consumes them intra-module (bodyBlock). This is
+      "export-for-test" — acceptable but worth flagging: the export surface is wider than the
+      real API needs.
+    evidence: |
+      pickRenderer: prod caller render.ts:66 (intra-module); only external importer is
+        pickRenderer.test.ts (10 asserts). Not in index.ts.
+      truncate: prod caller render.ts:70 (intra-module); only external importer is
+        pickRenderer.test.ts:30,37. Not in index.ts.
+    recommended_action: >
+      Acceptable as-is (pure functions, direct unit tests add value per testing.md §4
+      edge-cases/validation). No change required; documented so it is not mistaken for a
+      cross-package wiring gap. Do NOT promote these to index.ts (they are interface-layer,
+      not core — would violate the web→core direction).
+
+dead_exports_summary:
+  - "VerdictSchema (index.ts:37) — dead public re-export — MEDIUM (F-wire-1)"
+  - "escapeHtml (render.ts:30) — export keyword unjustified, code is live intra-module — MEDIUM (F-wire-2)"
+  - "pickRenderer / truncate (render.ts) — export-for-test, prod caller intra-module — MEDIUM/advisory (F-wire-3)"
+
+boundary_respect:
+  status: PASS
+  evidence: >
+    web → core direction preserved: src/web/server.ts and render.ts import only from
+    ../core/index.js. Core (verdict.ts, index.ts) imports nothing from src/web. No
+    src/local|cloud|theokit tiers touched by M2. DIP boundary (architecture.md §1-2) intact.
+
+integration_with_existing_flows:
+  status: PASS
+  evidence: >
+    Reachability confirmed from the live HTTP entry point buildWebServer → route():
+      - GET /            → listRuns → loadRun + loadVerdict + renderListing (reachable)
+      - GET /runs/:id    → loadRun + loadVerdict → renderRun → verdictForm/verdictBadge (reachable)
+      - POST /runs/:id/verdict → RUN_ID_RE guard → loadRun(exists?) → readBody → saveVerdict → 303 (reachable)
+    No new module is an orphan. E2E (review-e2e.test.ts) drives all three through real fetch.
+
+triad_pillar_c_sanity:
+  status: PASS
+  note: >
+    Plan explicitly declares NO new counter for M2; observable = verdict persisted
+    (loadVerdict != null). No .wiring-evidence.json on disk — consistent with "no new
+    metric" decision, NOT a fabrication concern. The observable is exercised honestly:
+    review-e2e.test.ts:78-80 round-trips loadVerdict after the POST and asserts
+    verdict === "approved" + note === "revisado ok"; server.test.ts:124-126 idem.
+    Magnitude check N/A (boolean-presence observable, not a count).
+
+blockers: []
+highs: []
+mediums:
+  - F-wire-1
+  - F-wire-2
+  - F-wire-3

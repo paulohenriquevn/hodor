@@ -1,0 +1,246 @@
+agent: review-m2-review-webapp-domain-security
+review_target: main..HEAD for plan m2-review-webapp
+domain: security
+domain_specific_patterns_checked:
+  - "XSS — escapeHtml on every dynamic ${...} sink in render.ts (renderListing, verdictBadge, verdictForm, renderRun, headersTable, bodyBlock, requestSection, responseSection, assertsTable, capturesList)"
+  - "Stored XSS via human note (EC-1)"
+  - "Reflected/stored XSS via external-API-controlled fields (name, headers, body, url, statusText, captures)"
+  - "Path traversal on :id (RUN_ID_RE before path.join — GET and POST)"
+  - "CSRF on POST /runs/:id/verdict (EC-4)"
+  - "DoS — readBody 1MB cap + error leakage"
+  - "Verdict file naming by runId (UUID-validated before fs write)"
+  - "Info leakage in 500 handler"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# XSS SINK ENUMERATION — every dynamic ${...} in render.ts, escape-confirmed.
+# Result: ALL dynamic values pass through escapeHtml(). No raw HTML interpolation
+# of attacker-influenced data found. Detailed audit below for the record.
+#
+#   renderListing(): it.runId(L234 attr, UUID), it.name(L234 text, ESC),
+#                    it.createdAt(L236 ESC), it.stepCount(L237 number),
+#                    it.verdict(L231 ESC) — all safe.
+#   verdictBadge():  verdict.verdict(L147 ESC), verdict.note(L146 ESC — EC-1 ✓),
+#                    verdict.decidedAt(L147 ESC) — all safe.
+#   verdictForm():   runId(L152 attr, UUID-constrained) — safe.
+#   renderRun():     env.runId(L162/167/203 ESC), env.name(L162/203 ESC),
+#                    env.schemaVersion(L204 literal 1), env.createdAt(L204 ESC),
+#                    env.steps.length(L204 number) — all safe.
+#   requestSection:  req.method/req.url(L88 ESC) — external-controlled, ESC ✓.
+#   responseSection: res.status(number), res.statusText(L96 ESC),
+#                    durationMs(toFixed) — external-controlled, ESC ✓.
+#   headersTable():  header k/v(L58 ESC) — external API headers, ESC ✓.
+#   bodyBlock():     contentType(L68 ESC), rendered body(L82 ESC) — external
+#                    response body, ESC ✓; binary never embedded (ADR D2).
+#   assertsTable():  source/op/expected/actual(L109-111 ESC) — ESC ✓.
+#   capturesList():  k/v(L125 ESC) — ESC ✓.
+# ─────────────────────────────────────────────────────────────────────────────
+
+findings:
+  - id: F-sec-1
+    severity: LOW
+    file: src/web/render.ts
+    line: 30
+    plan_ref: EC-1 MUST-FIX (escape note/verdict) — knowledge-base/reviews/m2-review-webapp-edge-cases-2026-06-18.md
+    domain_anchor: OWASP XSS Prevention — Rule #2 (attribute escaping requires single-quote)
+    summary: >
+      escapeHtml() escapes & < > and double-quote but NOT single-quote ('). render.ts
+      uses single-quoted HTML attributes (e.g. action='/runs/${escapeHtml(runId)}/verdict'
+      L152, href='/runs/${escapeHtml(it.runId)}' L234). Today the only values placed in
+      single-quoted attributes are runId, which is UUID-constrained by RUN_ID_RE/zod, so a
+      single-quote can never reach those sinks — NOT exploitable as written. But the escaper
+      is one refactor away from being unsafe: the moment any attacker-influenced field
+      (name, content-type, header value) is ever placed inside a single-quoted attribute,
+      attribute-breakout XSS becomes possible. The escaper is the single shared trust
+      boundary for the whole render layer; it should be complete, not "complete given the
+      current callers".
+    evidence: |
+      ```ts
+      // render.ts:30 — missing the ' -> &#39; replacement
+      export function escapeHtml(s: string): string {
+        return s
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");   // no .replace(/'/g, "&#39;")
+      }
+      // render.ts:152 — single-quoted attribute sink
+      <form ... action='/runs/${escapeHtml(runId)}/verdict'>
+      // render.ts:234 — single-quoted attribute sink
+      <td><a href='/runs/${escapeHtml(it.runId)}'>...
+      ```
+    recommended_action: >
+      Add .replace(/'/g, "&#39;") to escapeHtml so it is safe in BOTH single- and
+      double-quoted attribute contexts. Defense-in-depth; no behavior change for current
+      UUID-only attribute values. Cheapest possible hardening of the shared escaper.
+
+  - id: F-sec-2
+    severity: LOW
+    file: src/web/server.ts
+    line: 48
+    plan_ref: Failure scenarios table (plan) / general error-handling Rule 8
+    domain_anchor: OWASP A09 / CWE-209 (information exposure through error message)
+    summary: >
+      The top-level catch returns the raw Error.message to the HTTP client in a 500 body
+      ("internal error: ${err.message}"). For this app the thrown errors are ZodError
+      (corrupt run/verdict file) and fs errors, whose messages can include file paths and
+      schema internals. For a local single-user tool this is acceptable and arguably useful
+      for the operator, but it is the pattern that leaks server internals once the app is
+      ever bound to a network interface. Note it currently listens on the port via
+      server.listen(port) without binding to 127.0.0.1 (the log string SAYS 127.0.0.1 but
+      listen() defaults to all interfaces), so the leak surface is wider than the comment
+      implies — see F-sec-5.
+    evidence: |
+      ```ts
+      // server.ts:47-50
+      .catch((err: unknown) => {
+        res.writeHead(500, { "content-type": "text/plain" });
+        res.end(`internal error: ${err instanceof Error ? err.message : "unknown"}`);
+      });
+      ```
+    recommended_action: >
+      Acceptable for M2 (local single-user, documented constraint). When/if the app is
+      exposed: log the full err server-side, return a generic "internal error" body to the
+      client. Track as follow-up alongside the CSRF hardening (EC-4).
+
+  - id: F-sec-3
+    severity: INFO
+    file: src/web/server.ts
+    line: 23
+    plan_ref: EC-1 (M0) anti path-traversal — plan Failure scenarios row 3
+    domain_anchor: CWE-22 (path traversal)
+    summary: >
+      Path-traversal defense CONFIRMED present and applied on BOTH surfaces before any
+      path.join: GET /runs/:id validates RUN_ID_RE at server.ts:79 before join(dir,
+      `${id}.json`); POST /runs/:id/verdict validates RUN_ID_RE at server.ts:101 before
+      loadRun(join(...)) and before the runId ever reaches saveVerdict (which writes
+      `${runId}.json`). listRuns() also re-applies RUN_ID_RE to readdir entries (L161).
+      RUN_ID_RE = /^[0-9a-f-]{36}$/i admits only hex + dashes of fixed length 36 — no '/',
+      '.', or '\\' can pass, so no traversal segment is constructible. saveVerdict therefore
+      receives a structurally-safe runId. This is a PASS, recorded as positive evidence.
+    evidence: |
+      ```ts
+      const RUN_ID_RE = /^[0-9a-f-]{36}$/i;                 // server.ts:23
+      if (!RUN_ID_RE.test(id)) return { status: 400, ... }; // GET  server.ts:79
+      if (!RUN_ID_RE.test(id)) return { status: 400, ... }; // POST server.ts:101
+      // saveVerdict writes join(dir, `${valid.runId}.json`) — runId already UUID-shaped
+      ```
+    recommended_action: >
+      No action. Note (non-blocking): RUN_ID_RE is laxer than a strict UUIDv4 (it accepts
+      e.g. all-dashes or wrong dash positions), but it is path-safe, which is the security
+      property that matters here. A stricter UUID regex would be a polish, not a fix.
+
+  - id: F-sec-4
+    severity: INFO
+    file: src/web/server.ts
+    line: 131
+    plan_ref: plan T2.2 Deep Dives ("cap de tamanho do body 1 MB") / DoS mitigation
+    domain_anchor: CWE-400 (uncontrolled resource consumption)
+    summary: >
+      readBody DoS cap CONFIRMED correct. The 1 MB cap is enforced on the RUNNING total
+      (size += chunk.length checked BEFORE pushing), so it cannot be bypassed by streaming
+      many small chunks — memory is bounded at ~1 MB + one chunk. On overflow it rejects the
+      promise AND calls req.destroy(), and the rejection is caught by the top-level handler
+      → 500 (not a hang). The overflow Error message is the static literal "body too large"
+      — no attacker input echoed, so no info leak via this path. PASS, recorded as positive
+      evidence.
+    evidence: |
+      ```ts
+      req.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_BODY_BYTES) { reject(new Error("body too large")); req.destroy(); return; }
+        chunks.push(chunk);
+      });
+      ```
+    recommended_action: >
+      No action. Minor: an oversized body surfaces as a generic 500 rather than 413 Payload
+      Too Large; cosmetic, not security. Optionally map "body too large" → 413 for clarity.
+
+  - id: F-sec-5
+    severity: LOW
+    file: src/web/server.ts
+    line: 198
+    plan_ref: ADR D5 Consequences / EC-4 ("uso local single-user; origem é o operador no browser local")
+    domain_anchor: Defense-in-depth — the CSRF/no-auth accepted-risk assumes loopback-only binding
+    summary: >
+      The whole M2 security posture (CSRF accepted as YAGNI, no auth, error.message leaked in
+      500) rests on the documented assumption "local single-user, origin is the operator's
+      local browser". But server.listen(port) is called with NO host argument, so Node binds
+      to 0.0.0.0 (all interfaces / dual-stack), not loopback — despite the startup log
+      printing "http://127.0.0.1:${port}". On a shared/LAN/coffee-shop network this exposes
+      the review app (and the error-message leak of F-sec-2, and the unauthenticated verdict
+      POST) to other hosts, contradicting the single-user assumption the accepted risks
+      depend on. The CSRF-acceptance and 500-leak decisions are only sound IF the bind is
+      actually loopback.
+    evidence: |
+      ```ts
+      // server.ts:196-200
+      const port = Number(process.env.HODOR_WEB_PORT ?? 4000);
+      const server = buildWebServer();
+      server.listen(port, () => {                                 // <-- no host arg => 0.0.0.0
+        console.error(`hodor web review app on http://127.0.0.1:${port}`);  // log lies about scope
+      });
+      ```
+    recommended_action: >
+      Bind explicitly to loopback to MATCH the documented single-user threat model:
+      server.listen(port, "127.0.0.1", ...). This is the cheapest way to make the EC-4 CSRF
+      accepted-risk and the F-sec-2 error-leak actually true. One-line change; turns the
+      comment into an enforced invariant rather than a hope.
+
+  - id: F-sec-6
+    severity: INFO
+    file: src/web/render.ts
+    line: 146
+    plan_ref: EC-1 MUST-FIX — note is human input; verdict/name/headers/body from external APIs
+    domain_anchor: OWASP Stored XSS — untrusted data rendered into HTML
+    summary: >
+      EC-1 MUST-FIX CONFIRMED RESOLVED. The human-entered note is escaped at render.ts:146
+      (verdictBadge); verdict value escaped at L147. The higher-risk vector flagged in the
+      task brief — external-API-controlled fields the agent harness captures from
+      potentially-hostile APIs (response/request headers, response body, url, statusText,
+      captures) — is ALSO fully escaped: every such sink routes through escapeHtml
+      (headersTable L58, bodyBlock L68/L82, requestSection L88, responseSection L96,
+      assertsTable L109-111, capturesList L125). Binary bodies are never embedded (ADR D2,
+      bodyBlock L67-69). No raw interpolation of attacker-influenced data exists in the HTML
+      output path. PASS — recorded as positive evidence; see the SINK ENUMERATION block above.
+    evidence: |
+      ```ts
+      // render.ts:146 — human note escaped (EC-1)
+      const note = verdict.note ? ` — <span class='note'>${escapeHtml(verdict.note)}</span>` : "";
+      // render.ts:58 — external API header k/v escaped
+      `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v)}</td></tr>`
+      // render.ts:82 — external response body escaped
+      `<pre class='body'>${escapeHtml(rendered)}</pre>`
+      ```
+    recommended_action: >
+      No action on the escaping itself — it is correct and complete. Only F-sec-1
+      (single-quote in escapeHtml) is the residual hardening on the shared escaper.
+
+summary: |
+  SECURITY VERDICT for m2-review-webapp: no BLOCKER, no HIGH.
+
+  The two EC-1 MUST-FIX XSS concerns (human note + external-API-controlled fields) are
+  RESOLVED — I enumerated every dynamic ${...} sink in render.ts (renderListing,
+  verdictBadge, verdictForm, renderRun, headersTable, bodyBlock, requestSection,
+  responseSection, assertsTable, capturesList) and confirmed each attacker-influenceable
+  value passes through escapeHtml. Binary bodies are never embedded (ADR D2). Path
+  traversal is correctly blocked by RUN_ID_RE on BOTH the GET and the POST surface before
+  any path.join, and the verdict file write inherits that UUID-shaped runId. The 1 MB
+  readBody cap is enforced on the running total (bounded memory) and leaks no input.
+
+  Residual items are all LOW/INFO and consistent with the documented "local single-user"
+  posture:
+   - F-sec-1 (LOW): escapeHtml does not escape single-quote; not exploitable today (only
+     UUID values reach single-quoted attrs) but the shared escaper should be complete.
+   - F-sec-5 (LOW): server.listen() binds 0.0.0.0, not loopback, despite the 127.0.0.1
+     log — this undermines the very single-user assumption the CSRF (EC-4) and 500-leak
+     accepted-risks rest on. One-line fix (listen on "127.0.0.1") makes the threat model
+     real. This is the most worthwhile of the LOWs.
+   - F-sec-2 (LOW): 500 handler echoes Error.message (path/schema internals) — acceptable
+     locally, must be generic if ever networked.
+   - F-sec-3, F-sec-4, F-sec-6 (INFO): positive evidence — traversal defense, DoS cap, and
+     XSS escaping all PASS.
+
+  Honest severity call: for the declared local single-user use, none of these block merge.
+  But F-sec-1 + F-sec-5 together are cheap, and F-sec-5 is the one I'd push to fix now
+  because it silently widens the blast radius beyond the threat model every other accepted
+  risk depends on.

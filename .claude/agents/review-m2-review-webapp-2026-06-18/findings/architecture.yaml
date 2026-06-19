@@ -1,0 +1,149 @@
+agent: review-m2-review-webapp-architecture
+review_target: origin/main..develop for plan m2-review-webapp
+plan: .claude/knowledge-base/plans/m2-review-webapp-plan.md
+reviewed_at: 2026-06-18
+summary_note: |
+  DIP boundary is clean and the central design thesis of the plan holds: the verdict
+  RULE lives in the core (src/core/verdict.ts) with zod validation at the boundary;
+  src/web/ is a thin adapter that delegates saveVerdict/loadVerdict to the core and does
+  only its legitimate adapter-level I/O (HTTP body read + runs/ directory listing).
+  pickRenderer/truncate are pure functions in render.ts (interface layer, no I/O).
+  D1 (zero new dependency) is verified: package.json is byte-identical across the diff
+  (deps remain @modelcontextprotocol/sdk, jsonpath-plus, zod) — no vue/react/express/
+  svelte/fastify/koa/handlebars/ejs/body-parser. Backward-compat is preserved:
+  RunEnvelopeSchema.name is z.string().optional() with schemaVersion still literal 1,
+  buildRunEnvelope(steps, deps, name?) keeps the existing call sites valid, and
+  renderRun(env, verdict = null) defaults the new param. ADRs D1–D5 are all justified in
+  the plan. One real error-handling defect (postVerdict catch-all → 400) plus DRY/dead-CSS
+  and cohesion smells follow.
+
+findings:
+  - id: F-arch-1
+    severity: HIGH
+    file: src/web/server.ts
+    line: 121
+    plan_ref: T2.2 Deep Dives / ADR D3 / Drawbacks "POST com verdict inválido" + architecture.md §2 + Unbreakable Rule 8
+    summary: >-
+      postVerdict's bare `catch {}` maps EVERY saveVerdict failure to HTTP 400 "invalid
+      verdict", conflating a client validation error (ZodError) with a server-side I/O
+      failure (EACCES, ENOSPC, disk full). Fail-fast/fail-clear is violated: an
+      infrastructure failure is reported to the user as their input being invalid.
+    evidence: |
+      ```ts
+      try {
+        await saveVerdict(verdict, verdictsDir);
+      } catch {
+        // EC-3: verdict inválido/ausente → 400 (não grava).
+        return { status: 400, contentType: "text/plain", body: "invalid verdict" };
+      }
+      ```
+      saveVerdict (src/core/verdict.ts:25-34) runs `VerdictSchema.parse` (ZodError →
+      genuinely a 400) AND `mkdir` + `writeFile` (ENOSPC/EACCES → genuinely a 500). The
+      catch-all cannot tell them apart. The rest of the server distinguishes ENOENT (404)
+      from unknown errors (rethrow → 500) correctly (lines 84-89, 105-110); this path
+      regresses that discipline. Unbreakable Rule 8: "diferencie erros recuperáveis de
+      irrecuperáveis"; "nunca trate todo erro da mesma forma".
+    recommended_action: >-
+      Narrow the catch: re-throw (→ 500 via buildWebServer's outer catch) for any error
+      that is not a zod validation error. e.g. `catch (err) { if (err instanceof
+      z.ZodError) return 400; throw err; }`. Keep the 400 strictly for the
+      validation-boundary failure the plan/EC-3 actually intends.
+
+  - id: F-arch-2
+    severity: MEDIUM
+    file: src/web/render.ts
+    line: 196
+    plan_ref: ADR D5 (listagem) + DRY (CLAUDE.md §12) + architecture.md §6
+    summary: >-
+      Listing-only CSS rules (`table.listing`, `.pf-pass`, `.pf-fail`) are duplicated in
+      two places AND one copy is dead. They are emitted inside renderRun's <style> block
+      (lines 196-198) where no listing table is ever rendered, and again in LISTING_STYLE
+      (lines 214-216) which is the only place that actually needs them.
+    evidence: |
+      renderRun() inline style (the run detail page — no listing table here):
+      ```css
+      table.listing { border-collapse: collapse; width: 100%; font-size: .85rem; }
+      table.listing td, table.listing th { border: 1px solid #e0e0e0; padding: 4px 10px; ... }
+      .pf-pass { color: #137333; font-weight: 700; } .pf-fail { color: #b00020; font-weight: 700; }
+      ```
+      LISTING_STYLE (line 214-216) — identical rules, used by renderListing().
+      `git diff` confirms BOTH blocks are introduced by this commit (added lines 126-128
+      and 145-147 of the render.ts diff). The renderRun copy is dead CSS; the
+      duplication is a knowledge-duplication DRY violation (change the listing palette and
+      you must edit two places, one of which is invisible).
+    recommended_action: >-
+      Remove the three listing-only rules from renderRun's <style> block (they belong only
+      to renderListing). If the shared rules (body font, anchor color) are worth
+      deduplicating, extract a single shared style constant; otherwise just delete the dead
+      listing rules from the run page.
+
+  - id: F-arch-3
+    severity: LOW
+    file: src/web/server.ts
+    line: 153
+    plan_ref: T2.1 Tasks "1. listRuns helper (server ou core)" + architecture.md §3 (cohesion / SRP)
+    summary: >-
+      listRuns lives in the web adapter (acceptable — it is adapter-level orchestration of
+      core reads) but bundles five concerns in one function: directory scan + UUID filter +
+      per-file loadRun + stat for mtime sort + loadVerdict + passFail computation + shape
+      mapping. The plan explicitly left placement ambiguous ("server ou core"); the chosen
+      single-function form is borderline on SRP and is the natural seam where a future
+      "list runs" use case would belong in the core/application layer.
+    evidence: |
+      ```ts
+      async function listRuns(dir, verdictsDir): Promise<ListingItem[]> {
+        // readdir + filter(.json + RUN_ID_RE) + loop{ loadRun(try/catch skip) + stat +
+        //   loadVerdict + passFail } + sort(mtime desc) + strip mtime
+      }
+      ```
+      passFail (line 189) is run-domain logic ("all asserts of all steps pass?") that
+      operates on a RunEnvelope — it reads like a core/domain concern leaking into the
+      adapter. The plan's Coverage Matrix maps gap #4 (pass/fail evident) to this.
+    recommended_action: >-
+      Acceptable for M2 (single use case, KISS/YAGNI). For M3 when a second consumer of the
+      run list appears, lift the run-enumeration + passFail summary into the core
+      (e.g. core/listRuns or a RunSummary helper) so the web adapter only renders. Track as
+      a refactor note, not a blocker.
+
+  - id: F-arch-4
+    severity: INFO
+    file: src/web/render.ts
+    line: 1
+    plan_ref: rules/architecture.md §3 (module cohesion) + Global DoD "≤ 500 linhas/arquivo"
+    summary: >-
+      render.ts is 259 lines and growing (was 134 pre-M2). Still cohesive — every export
+      is "RunEnvelope/ListingItem → HTML string, no I/O" — and well under the 500-line
+      budget. Not a god-file today, but it now holds run-detail rendering, listing
+      rendering, content-type dispatch, truncation, and HTML escaping; the next feature
+      (e.g. M3 diff view) is the point to split (e.g. render-run.ts / render-listing.ts /
+      render-body.ts).
+    evidence: |
+      `wc -l src/web/render.ts` → 259. Exports: escapeHtml, pickRenderer, truncate,
+      renderRun, renderListing, ListingItem. Cohesion is intact (single responsibility:
+      pure HTML rendering of run artifacts).
+    recommended_action: >-
+      No action for M2. Flag for M3: split by surface (run page vs listing vs body
+      renderer) before the file crosses ~350-400 lines, to keep the single-reason-to-change
+      property.
+
+  - id: F-arch-5
+    severity: INFO
+    file: src/core/verdict.ts
+    line: 10
+    plan_ref: ADR D3 + architecture.md §1-§2 (DIP) — clean-finding (not padding)
+    summary: >-
+      DIP boundary correctly realized: the verdict RULE (VerdictSchema enum
+      approved/rejected, validate-before-write, separate-file invariant) is in the core
+      domain; the web adapter only invokes save/loadVerdict and never re-validates or
+      decides. core/index.ts confirms the core exports the verdict surface and imports
+      nothing from src/web or src/mcp (grep: no `../web` import in src/core). Verdict
+      `decidedAt` is set by the adapter (new Date().toISOString()) which is the correct
+      composition-root responsibility, not the domain's.
+    evidence: |
+      ```ts
+      // src/core/verdict.ts — domain rule + boundary validation
+      export const VerdictSchema = z.object({ runId, verdict: z.enum(["approved","rejected"]), note?, decidedAt });
+      export async function saveVerdict(v, dir) { const valid = VerdictSchema.parse(v); ...writeFile }
+      ```
+      `grep -rn "../web" src/core/` → no matches (boundary respected).
+    recommended_action: No action — this is the design working as the plan/ADR D3 intended.

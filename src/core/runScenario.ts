@@ -41,5 +41,5 @@ export async function runScenario(
     steps.push({ ...runStep, asserts, captures });
   }
 
-  return buildRunEnvelope(steps, deps);
+  return buildRunEnvelope(steps, deps, scenario.name);
 }

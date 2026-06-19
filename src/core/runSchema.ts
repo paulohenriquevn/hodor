@@ -52,6 +52,9 @@ export const RunEnvelopeSchema = z.object({
   schemaVersion: z.literal(1),
   runId: z.string().min(1),
   createdAt: z.string(),
+  // M2 (ADR D4): nome do cenário, OPCIONAL e aditivo — runs do M0/run_request
+  // (sem cenário) seguem válidos; usado para rotular a listagem de review.
+  name: z.string().optional(),
   steps: z.array(RunStepSchema).min(1),
 });
 

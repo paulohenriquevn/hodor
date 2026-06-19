@@ -32,6 +32,14 @@ export {
   type CaptureSpec,
 } from "./scenarioSchema.js";
 export { runScenario, type RunScenarioDeps } from "./runScenario.js";
+// M2 — verdict store
+export {
+  VerdictSchema,
+  saveVerdict,
+  loadVerdict,
+  defaultVerdictsDir,
+  type Verdict,
+} from "./verdict.js";
 export { interpolateRequest } from "./interpolate.js";
 export { evalCapture, evalJsonPath } from "./evalCapture.js";
 export { evalAssert } from "./evalAssert.js";

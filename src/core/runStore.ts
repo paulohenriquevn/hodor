@@ -20,13 +20,19 @@ export function defaultRunsDir(): string {
  * Clock/id injetáveis tornam o resultado determinístico em teste (testing.md §6).
  * As chaves são construídas em ordem fixa (diff-amigável, semente de M3).
  */
-export function buildRunEnvelope(steps: RunStep[], deps: EnvelopeDeps = {}): RunEnvelope {
+export function buildRunEnvelope(
+  steps: RunStep[],
+  deps: EnvelopeDeps = {},
+  name?: string,
+): RunEnvelope {
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? randomUUID;
   return {
     schemaVersion: 1,
     runId: newId(),
     createdAt: new Date(now()).toISOString(),
+    // M2 (D4): inclui name só quando fornecido (run_request do M0 não tem cenário).
+    ...(name !== undefined ? { name } : {}),
     steps,
   };
 }
