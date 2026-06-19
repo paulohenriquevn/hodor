@@ -40,6 +40,18 @@ export {
   defaultVerdictsDir,
   type Verdict,
 } from "./verdict.js";
+
+// M3 — persistência versionável
+export { stableStringify } from "./stableStringify.js";
+export { normalizeRun, VOLATILE_HEADERS, type NormalizedRun, type NormalizedStep } from "./normalizeRun.js";
+export {
+  ReviewArtifactSchema,
+  buildReviewArtifact,
+  saveReviewArtifact,
+  loadReviewArtifact,
+  defaultReviewsDir,
+  type ReviewArtifact,
+} from "./reviewArtifact.js";
 export { interpolateRequest } from "./interpolate.js";
 export { evalCapture, evalJsonPath } from "./evalCapture.js";
 export { evalAssert } from "./evalAssert.js";
