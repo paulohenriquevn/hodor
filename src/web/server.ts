@@ -236,6 +236,8 @@ async function listRuns(dir: string, verdictsDir: string): Promise<ListingItem[]
       stepCount: env.steps.length,
       allAssertsPass: passFail(env),
       verdict: verdict?.verdict ?? null,
+      // M4 (DoD #2): origem do cenário p/ o badge "gerado pelo agente".
+      origin: env.provenance?.origin,
       mtimeMs: s.mtimeMs,
     });
   }

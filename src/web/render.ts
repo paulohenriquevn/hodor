@@ -15,6 +15,8 @@ export interface ListingItem {
   stepCount: number;
   allAssertsPass: boolean | null;
   verdict: Verdict["verdict"] | null;
+  // M4: origem do cenário (badge "gerado pelo agente"). Ausente em runs M0-M3.
+  origin?: "agent-generated" | "human-authored";
 }
 
 /**
@@ -140,6 +142,19 @@ function stepSection(step: RunStep, index: number): string {
   </section>`;
 }
 
+/**
+ * Selo de proveniência (M4, DoD #2). Só aparece para cenários GERADOS pelo agente.
+ * "· pendente de revisão" enquanto não há verdict (estado derivado — ADR D3).
+ * Escapa `sourceRef` (input não-confiável — herda o anti-XSS do M2).
+ */
+function provenanceBadge(env: RunEnvelope, verdict: Verdict | null): string {
+  const prov = env.provenance;
+  if (!prov || prov.origin !== "agent-generated") return "";
+  const pending = verdict ? "" : " · <strong>pendente de revisão</strong>";
+  const src = prov.sourceRef ? ` <span class='muted'>(${escapeHtml(prov.sourceKind)}: ${escapeHtml(prov.sourceRef)})</span>` : ` <span class='muted'>(${escapeHtml(prov.sourceKind)})</span>`;
+  return `<p class='provenance agent'>🤖 gerado pelo agente${pending}${src}</p>`;
+}
+
 /** Selo do verdict atual (EC-1: escapa `note`, input do humano). */
 function verdictBadge(verdict: Verdict | null): string {
   if (!verdict) return `<p class='verdict pending'>Verdict: <strong>pendente</strong></p>`;
@@ -191,6 +206,7 @@ export function renderRun(env: RunEnvelope, verdict: Verdict | null = null): str
     .verdict.approved { background: #e6f4ea; color: #137333; }
     .verdict.rejected { background: #fdecef; color: #b00020; }
     .verdict.pending { background: #f6f8fa; color: #666; }
+    .provenance.agent { font-size: .85rem; background: #eef3fb; color: #0b66c3; padding: .4rem .75rem; border-radius: 6px; }
     .verdict-form { margin: 1rem 0; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
     .verdict-form textarea { font-family: inherit; flex: 1; min-width: 200px; }
     a { color: #0b66c3; }
@@ -200,6 +216,7 @@ export function renderRun(env: RunEnvelope, verdict: Verdict | null = null): str
   <p class="meta"><a href="/">← todos os runs</a></p>
   <h1>Hodor run <code>${escapeHtml(env.runId)}</code>${env.name ? ` — ${title}` : ""}</h1>
   <p class="meta">schemaVersion ${env.schemaVersion} · ${escapeHtml(env.createdAt)} · ${env.steps.length} step(s)</p>
+  ${provenanceBadge(env, verdict)}
   ${verdictBadge(verdict)}
   ${verdictForm(env.runId)}
   ${steps}
@@ -213,6 +230,7 @@ const LISTING_STYLE = `body { font-family: ui-monospace, SFMono-Regular, Menlo, 
     table.listing td, table.listing th { border: 1px solid #e0e0e0; padding: 4px 10px; text-align: left; }
     .pf-pass { color: #137333; font-weight: 700; } .pf-fail { color: #b00020; font-weight: 700; }
     .v-approved { color: #137333; } .v-rejected { color: #b00020; } .v-pending { color: #888; }
+    .agent-tag { font-size: .75rem; background: #eef3fb; color: #0b66c3; padding: 1px 6px; border-radius: 4px; }
     .muted { color: #888; }`;
 
 /** Página de listagem (GET /) — runs mais recentes primeiro. */
@@ -228,8 +246,13 @@ export function renderListing(items: ListingItem[]): string {
       const v = it.verdict
         ? `<span class='v-${it.verdict}'>${escapeHtml(it.verdict)}</span>`
         : `<span class='v-pending'>pendente</span>`;
+      // M4: badge "gerado pelo agente · pendente" na listagem (DoD #2).
+      const agent =
+        it.origin === "agent-generated"
+          ? ` <span class='agent-tag'>🤖 gerado${it.verdict ? "" : " · pendente"}</span>`
+          : "";
       return `<tr>
-        <td><a href='/runs/${escapeHtml(it.runId)}'>${it.name ? escapeHtml(it.name) : "(sem cenário)"}</a></td>
+        <td><a href='/runs/${escapeHtml(it.runId)}'>${it.name ? escapeHtml(it.name) : "(sem cenário)"}</a>${agent}</td>
         <td><code>${escapeHtml(it.runId)}</code></td>
         <td>${escapeHtml(it.createdAt)}</td>
         <td>${it.stepCount}</td>
