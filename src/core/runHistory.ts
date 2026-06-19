@@ -4,7 +4,7 @@ import { join, resolve, sep } from "node:path";
 import { RunEnvelopeSchema, type RunEnvelope } from "./runSchema.js";
 import { stableStringify } from "./stableStringify.js";
 import { defaultRunsDir } from "./runStore.js";
-import { defaultVerdictsDir } from "./verdict.js";
+import { defaultVerdictsDir, loadVerdict } from "./verdict.js";
 
 /**
  * Histórico + retenção de runs (M5, ADR D4/D5). Identidade de cenário p/ agrupar
@@ -23,7 +23,13 @@ export function defaultHistoryLimit(): number {
  * sha256 dos `{method,url}` dos steps (mesmo cenário → mesma key). Espelha keploy
  * (identidade = conteúdo do cenário, não o id da execução).
  */
-export function scenarioKey(env: RunEnvelope): string {
+/** Shape estrutural mínimo p/ a identidade — satisfeito por RunEnvelope E Scenario (M6). */
+export interface ScenarioIdentity {
+  name?: string;
+  steps: ReadonlyArray<{ request: { method: string; url: string } }>;
+}
+
+export function scenarioKey(env: ScenarioIdentity): string {
   if (env.name !== undefined && env.name !== "") return env.name;
   const shape = env.steps.map((s) => ({ method: s.request.method, url: s.request.url }));
   return createHash("sha256").update(stableStringify(shape)).digest("hex");
@@ -66,6 +72,27 @@ export async function findPreviousRun(curr: RunEnvelope, dir: string = defaultRu
     .filter((r) => r.runId !== curr.runId && scenarioKey(r) === key && compareRuns(r, curr) < 0)
     .sort(compareRuns);
   return earlier.length > 0 ? earlier[earlier.length - 1]! : null;
+}
+
+/**
+ * Golden run (M6, ADR D1): o run mais recente (ordem total) do cenário `key` cujo
+ * `runId` tem verdict `approved`. É o baseline de regressão. `null` se nenhum aprovado
+ * (cenário nunca aprovado OU editado desde a aprovação → key órfã = risco #1 resolvido).
+ * Filtra por `approved` — NÃO por presença de verdict (que incluiria `rejected`).
+ */
+export async function findGoldenRun(
+  key: string,
+  dir: string = defaultRunsDir(),
+  verdictsDir: string = defaultVerdictsDir(),
+): Promise<RunEnvelope | null> {
+  const ofScenario = (await loadAllRuns(dir)).filter((r) => scenarioKey(r) === key).sort(compareRuns);
+  // do mais recente p/ o mais antigo: o primeiro aprovado é o golden.
+  for (let i = ofScenario.length - 1; i >= 0; i--) {
+    const run = ofScenario[i]!;
+    const verdict = await loadVerdict(run.runId, verdictsDir);
+    if (verdict?.verdict === "approved") return run;
+  }
+  return null;
 }
 
 /**

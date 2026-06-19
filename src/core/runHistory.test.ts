@@ -139,3 +139,37 @@ describe("RunEnvelope runId path-safety (F-dom-sec-1)", () => {
     expect(RunEnvelopeSchema.safeParse(ok).success).toBe(true);
   });
 });
+
+import { findGoldenRun } from "./runHistory.js";
+describe("findGoldenRun (M6)", () => {
+  it("find_golden_run_returns_latest_approved", async () => {
+    const dir = await tmp(); const vdir = await tmp();
+    for (let i = 1; i <= 3; i++) await persistRun(mkEnv({ runId: `a${i}`, createdAt: `2026-06-19T00:00:0${i}.000Z` }), dir);
+    await saveVerdict({ runId: "a1", verdict: "approved", decidedAt: "x" }, vdir);
+    await saveVerdict({ runId: "a2", verdict: "approved", decidedAt: "x" }, vdir);
+    // a3 sem verdict → golden = a2 (aprovado mais recente, não a3)
+    expect((await findGoldenRun("cenário-a", dir, vdir))?.runId).toBe("a2");
+  });
+
+  it("find_golden_run_ignores_rejected", async () => {
+    const dir = await tmp(); const vdir = await tmp();
+    await persistRun(mkEnv({ runId: "a1", createdAt: "2026-06-19T00:00:01.000Z" }), dir);
+    await persistRun(mkEnv({ runId: "a2", createdAt: "2026-06-19T00:00:02.000Z" }), dir);
+    await saveVerdict({ runId: "a1", verdict: "approved", decidedAt: "x" }, vdir);
+    await saveVerdict({ runId: "a2", verdict: "rejected", decidedAt: "x" }, vdir);
+    expect((await findGoldenRun("cenário-a", dir, vdir))?.runId).toBe("a1"); // rejected não é golden
+  });
+
+  it("find_golden_run_null_when_none_approved", async () => {
+    const dir = await tmp(); const vdir = await tmp();
+    await persistRun(mkEnv({ runId: "a1" }), dir);
+    expect(await findGoldenRun("cenário-a", dir, vdir)).toBeNull();
+  });
+
+  it("find_golden_run_ignores_other_scenarios", async () => {
+    const dir = await tmp(); const vdir = await tmp();
+    await persistRun(mkEnv({ runId: "b1", name: "cenário-B" }), dir);
+    await saveVerdict({ runId: "b1", verdict: "approved", decidedAt: "x" }, vdir);
+    expect(await findGoldenRun("cenário-a", dir, vdir)).toBeNull();
+  });
+});
