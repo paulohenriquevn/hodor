@@ -180,15 +180,17 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
-### M5 — [ ] Regressão: diff entre runs + anti-flaky
+### M5 — [x] Regressão: diff entre runs + anti-flaky
 
 **Objective:** Provar que uma alteração de agente mudou (ou não) o comportamento da API, comparando execuções ao longo do tempo.
 
 **Definition of done:**
 
-- [ ] Execuções históricas de um cenário são guardadas e comparáveis (run anterior vs run atual).
-- [ ] Diff de comportamento (status/headers/body) entre dois runs é computado e destacado na web app.
-- [ ] Normalização de campos voláteis (timestamps, IDs aleatórios) reduz falsos positivos no diff, com regras inspecionáveis (técnica de field-normalization do Keploy).
+- [x] Execuções históricas de um cenário são guardadas e comparáveis (run anterior vs run atual).
+- [x] Diff de comportamento (status/headers/body) entre dois runs é computado e destacado na web app.
+- [x] Normalização de campos voláteis (timestamps, IDs aleatórios) reduz falsos positivos no diff, com regras inspecionáveis (técnica de field-normalization do Keploy).
+
+**Delivered:** v0.6.0 (2026-06-19, PR #6 — co-shipou com M6). `diffRuns` compara o run atual vs anterior do mesmo cenário, normalizando voláteis em duas camadas: headers/timings (`normalizeRun`) + corpo via regras de `noise` (jsonpaths no cenário, mascaradas com sentinela visível `"<noise>"`, reusando `jsonpath-plus`). `scenarioKey` agrupa o histórico; `pruneRunHistory` retém last-N por cenário sem descartar run aprovado. Web: `GET /runs/:id/diff`. Fecha a limitação de body-noise deferida no M3. Review corrigiu 3 HIGH (path-traversal na retenção, assimetria de noise, observabilidade). core ≥91%, 0 vulns. Artefatos: `knowledge-base/plans/m5-regression-diff-plan.md`, `.../reviews/m5-regression-diff-review-2026-06-19.md`.
 
 **Dependencies:** M3.
 
@@ -203,16 +205,18 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 > Revisão de roadmap (2026-06-19) que abre o V2. O V1 (M0–M5) provou o loop agente→execução→revisão→verdict→regressão como **viewer de revisão**. O V2 fecha o loop de volta ao consumidor (agente/CI), transformando o Hodor de viewer em **gate de regressão**. Motivação: a North-star ("% de mudanças de agente com cenário revisado-e-aprovado anexado") só se move quando o agente consegue *consumir* a aprovação, não só produzi-la.
 
-### M6 — [ ] Fechar o loop: golden baseline + gate de regressão
+### M6 — [x] Fechar o loop: golden baseline + gate de regressão
 
 **Objective:** Dar ao agente um veredito de regressão **consumível por máquina** — comparando o run atual contra o último run **aprovado** do cenário (o *golden*) — fechando o loop autor → aprovação → consumo, sem auto-aprovar.
 
 **Definition of done:**
 
-- [ ] Conceito de "golden run": `findGoldenRun(scenarioKey)` retorna o run mais recente cujo cenário tem verdict `approved` (generaliza o `findPreviousRun` do M5 de "anterior" para "último aprovado"); `null` se nunca aprovado.
-- [ ] Tool MCP `check_scenario` que executa um cenário contra o serviço atual e retorna estruturado `{ status: "ok" | "regression" | "no_baseline", diff }` comparando vs golden — nunca auto-aprova (humano permanece no gate).
-- [ ] Replay de suíte: roda todos os cenários que têm golden e devolve um relatório agregado pass/fail + diff (o gate que o agente invoca antes de declarar uma mudança pronta).
-- [ ] Web: a página de diff compara "vs golden aprovado" (além de vs anterior); a listagem marca regressões vs baseline.
+- [x] Conceito de "golden run": `findGoldenRun(scenarioKey)` retorna o run mais recente cujo cenário tem verdict `approved` (generaliza o `findPreviousRun` do M5 de "anterior" para "último aprovado"); `null` se nunca aprovado.
+- [x] Tool MCP `check_scenario` que executa um cenário contra o serviço atual e retorna estruturado `{ status: "ok" | "regression" | "no_baseline", diff }` comparando vs golden — nunca auto-aprova (humano permanece no gate).
+- [x] Replay de suíte: roda todos os cenários que têm golden e devolve um relatório agregado pass/fail + diff (o gate que o agente invoca antes de declarar uma mudança pronta).
+- [x] Web: a página de diff compara "vs golden aprovado" (além de vs anterior); a listagem marca regressões vs baseline.
+
+**Delivered:** v0.6.0 (2026-06-19, PR #6 — abre o V2). `findGoldenRun` (aprovado mais recente) + tools MCP `check_scenario` (re-roda + diff vs golden → veredito estruturado `{status, goldenRunId, noiseChanged}` consumível por máquina, nunca auto-aprova) + `replay_suite` (relatório agregado, isolamento por cenário + `uncataloguedGoldens`) + web `?vs=golden` + badge ⚠ regressão. **Fecha o loop do V1: o agente consome a aprovação.** Validado ao vivo via MCP stdio real contra a API do GitHub. Review (6 agentes) corrigiu 5 HIGH (perf O(N²), gate cego a noiseChanged/goldenRunId, falso senso de cobertura, claim D2 sem teste); SSRF via draft commitável documentado. **M6.1** (dogfooding ao vivo): selo 🏆 golden + aviso ao aprovar run com asserts falhando. 220 testes, core ≥91%, 0 vulns, ZERO dep nova. Artefatos: `knowledge-base/plans/m6-golden-gate-plan.md`, `.../reviews/m6-golden-gate-review-2026-06-19.md`. **Humano segue único aprovador (contrato M2 intacto).**
 
 **Dependencies:** M2 (verdict), M3 (reviews/artefato), M5 (diffRuns).
 

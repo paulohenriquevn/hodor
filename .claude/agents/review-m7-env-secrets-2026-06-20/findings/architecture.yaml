@@ -1,0 +1,157 @@
+agent: architecture-reviewer
+cycle: review
+milestone: M7
+slug: m7-env-secrets
+date: 2026-06-20
+scope:
+  diff: origin/main..develop
+  files:
+    - src/core/redactSecrets.ts
+    - src/core/runScenario.ts
+    - src/core/checkScenario.ts
+    - src/core/index.ts
+    - src/mcp/secrets.ts
+    - src/mcp/server.ts
+verdict: READY_TO_MERGE
+summary: >-
+  Arquitetura do M7 está sólida e fiel ao plano/blueprint. DIP preservado: o core
+  nunca lê SEGREDO de process.env (recebe via deps.secrets); resolveHodorSecrets
+  vive no adaptador (src/mcp/secrets.ts), não no core. redactSecretValues é uma
+  função pura sem I/O nem mutação. O choke-point (redação antes de todo persistRun
+  no adaptador + redação interna no checkScenario antes do diff) está no lugar certo
+  e é completo em todos os sinks. ZERO dependência nova. SRP respeitado. Nenhum
+  BLOCKER, nenhum HIGH. 2 observações LOW/INFO advisory.
+
+counts:
+  blocker: 0
+  high: 0
+  medium: 0
+  low: 1
+  info: 3
+
+findings:
+  - id: ARCH-M7-INFO-1
+    severity: INFO
+    category: dip-boundary
+    title: "DIP preservado — core nunca lê SEGREDO de process.env"
+    file: src/core/runScenario.ts
+    line: 13
+    evidence: >-
+      grep 'process.env' em src/core/ retorna APENAS os HODOR_*_DIR pré-existentes
+      (verdict.ts:21, runStore.ts:16, reviewArtifact.ts:46, runHistory.ts:17,
+      draftStore.ts:47) — config de diretório, aceitável e separado do invariante de
+      segredo, conforme nota do brief. NENHUM segredo é lido no core: runScenario
+      recebe `secrets` via RunScenarioDeps (linha 14) e semeia variables["env."+k]
+      (linha 31). O comentário na linha 13 documenta explicitamente a fronteira.
+      grep 'from "../web"|from "../mcp"' em src/core/ = vazio (core não importa
+      adaptador). O Global DoD do plano (`grep process.env src/core/` para SEGREDO
+      vazio) é satisfeito.
+    assessment: >-
+      DIP/D1 cumprido. Domínio recebe a capacidade (secrets) por injeção; o adaptador
+      é o único que toca process.env para segredos. architecture.md §2 respeitado.
+    action: none
+
+  - id: ARCH-M7-INFO-2
+    severity: INFO
+    category: dip-boundary
+    title: "resolveHodorSecrets corretamente alocado no adaptador, e é função pura"
+    file: src/mcp/secrets.ts
+    line: 16
+    evidence: >-
+      resolveHodorSecrets está em src/mcp/ (adaptador), não no core (D1). É pura:
+      recebe um env-like (Record<string,string|undefined>) e retorna um Record novo,
+      sem ler process.env por dentro nem mutar a entrada. O process.env real é passado
+      pelo call-site em server.ts (linhas 121, 184, 220). Isso torna a allowlist
+      testável sem mexer no ambiente (secrets.test.ts injeta um env literal). A
+      allowlist por prefixo HODOR_SECRET_ (D2) é por construção — nunca expõe
+      process.env inteiro (anti-pattern do bruno citado no blueprint).
+    assessment: >-
+      Alocação de camada correta e testabilidade exemplar. SRP do módulo: "resolver
+      env vars allowlisted para segredos injetáveis" — uma responsabilidade só.
+    action: none
+
+  - id: ARCH-M7-INFO-3
+    severity: INFO
+    category: purity-srp
+    title: "redactSecretValues é puro (sem I/O, sem mutação) e bem coeso (SRP)"
+    file: src/core/redactSecrets.ts
+    line: 15
+    evidence: >-
+      redactSecretValues(env, values) não faz I/O e NUNCA muta o input: retorna um
+      novo RunEnvelope via spread (`...env`, `steps.map(...)`, `...step`,
+      scrubHeaders/scrubCaptures constroem objetos novos). Usa split/join (não regex)
+      — imune a metacaracteres no valor do segredo. Longest-first sobre a união
+      {raw, encodeURIComponent(value)} cobre o gap de encoding (EC-1) e evita redação
+      parcial quando um segredo é substring de outro. Trata corretamente as formas
+      opcionais do schema: request.body (optional → spread condicional), captures
+      (z.record(z.unknown()) → guard `typeof v === "string"`), response.body
+      (required string). O teste redact_secret_values_does_not_mutate_input
+      (redactSecrets.test.ts:60-64) trava o invariante de não-mutação. Módulo de
+      arquivo único com uma exportação — SRP: "redação por valor de um RunEnvelope".
+    assessment: >-
+      Função pura comprovada por teste; algoritmo do keploy (longest-first)
+      corretamente portado; complementa (não substitui) redactRequestHeaders por-nome
+      do M3 (defesa em profundidade). Nenhum reparo necessário.
+    action: none
+
+  - id: ARCH-M7-LOW-1
+    severity: LOW
+    category: choke-point-tradeoff
+    title: "Choke-point da redação é o lugar certo (adaptador + interior do checkScenario); NÃO mover para dentro do runScenario"
+    file: src/mcp/server.ts
+    line: 123
+    evidence: >-
+      A pergunta arquitetural do brief (c): redigir dentro do runScenario quebraria a
+      recaptura de captures? Análise confirma que SIM, e que o desenho atual está
+      correto. O fluxo inter-step depende do VALOR REAL do segredo durante toda a
+      execução — runScenario semeia variables["env."+k]=valorReal (runScenario.ts:31)
+      e interpola o token vivo em cada request; captures de um step alimentam o
+      próximo (runScenario.ts:42-45). Redigir DENTRO de runScenario (antes do retorno)
+      ainda seria pós-execução e tecnicamente não quebraria captures inter-step (que
+      já terminaram), MAS acoplaria a engine do core ao conceito de "valores a
+      redigir", forçando todo caller a passar os valores e poluindo a responsabilidade
+      de execução com a de saneamento (viola SRP). O desenho escolhido separa as duas
+      preocupações: runScenario EXECUTA com valor vivo; a redação acontece (1) no
+      adaptador imediatamente antes de TODO persistRun + no structuredContent
+      (server.ts:125-126, choke-point único EC-3) e (2) dentro de checkScenario
+      (checkScenario.ts:46) antes do diffRuns — necessário ali porque o golden já está
+      redigido e comparar golden-redigido vs run-com-token daria falso diff num header
+      não-sensível. Cobertura de sinks verificada: os 3 persistRun de produção em
+      server.ts (linhas 90/126/186) operam sobre envelopes já redigidos; replaySuite
+      NÃO persiste (só agrega status — replaySuite.ts), logo não é sink; buildReviewArtifact
+      parte de um run já persistido (redigido), herdando a redação; o web adapter
+      (src/web/server.ts) é read-only sobre runs persistidos. Trade-off bem resolvido.
+    assessment: >-
+      O choke-point está corretamente posicionado na fronteira de persistência (DIP:
+      o saneamento de saída é responsabilidade do adaptador que conhece os sinks) +
+      no ponto de comparação do core (checkScenario, onde a estabilidade do diff exige
+      simetria de redação). Mover a redação para dentro de runScenario seria uma
+      regressão de SRP sem ganho de segurança. Observação LOW (não-bloqueante): a
+      redação aparece em DOIS lugares distintos (adaptador para sinks de persistência;
+      checkScenario para o diff). Isso é correto por necessidade, mas cria duas
+      "portas" que um futuro caller de runScenario fora destes dois caminhos poderia
+      esquecer. Mitigação atual já existe — o core retorna o run redigido em
+      checkScenario, e o adaptador é o único caller direto de runScenario+persistRun.
+    action: >-
+      Nenhuma ação obrigatória. Sugestão advisory para hardening futuro (não neste PR):
+      documentar no index.ts/JSDoc de runScenario que o RunEnvelope retornado contém
+      valores de segredo VIVOS e DEVE ser passado por redactSecretValues antes de
+      qualquer persistência/retorno — um comentário-contrato que protege futuros
+      callers diretos. Não é BLOCKER nem HIGH: hoje só existem 2 callers e ambos
+      redigem corretamente.
+
+positives:
+  - "ZERO dependência nova confirmado (sem alteração em package.json/package-lock.json no diff)."
+  - "Backward-compat preservada: secrets? opcional ao final de RunScenarioDeps; callers M0-M6 intactos."
+  - "interpolate (M1) reusado sem mudança — parsimônia máxima (rung 5/6 do parsimony ladder)."
+  - "Comentários de código documentam as fronteiras DIP e os ADRs (D1-D6) com precisão."
+  - "src/core/index.ts mantém a superfície pública mínima (única porta DIP) e adiciona apenas redactSecretValues."
+
+dip_invariants_checked:
+  core_reads_no_secret_from_env: PASS
+  resolveHodorSecrets_in_adapter_not_core: PASS
+  core_does_not_import_adapter: PASS
+  redactSecretValues_pure_no_io_no_mutation: PASS
+  choke_point_covers_all_persist_sinks: PASS
+  zero_new_dependency: PASS
+  srp_secrets_and_redact_modules: PASS

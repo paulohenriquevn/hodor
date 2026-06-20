@@ -130,3 +130,21 @@ describe("runScenario", () => {
     expect(env.steps[1]!.asserts!.every((a) => a.pass)).toBe(true);
   });
 });
+
+describe("runScenario — M7 env/secrets (T1.1)", () => {
+  it("run_scenario_resolves_env_secret_in_header", async () => {
+    let seen: string | undefined;
+    const srv = createServer((req, res) => { seen = req.headers["authorization"] as string; res.statusCode = 200; res.end("{}"); });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const p = (srv.address() as AddressInfo).port;
+    const sc: Scenario = { schemaVersion: 1, name: "auth", steps: [{ name: "get", request: { method: "GET", url: `http://127.0.0.1:${p}/x`, headers: { Authorization: "Bearer ${{ env.TOKEN }}" } } }] };
+    await runScenario(sc, { secrets: { TOKEN: "abc123" } });
+    expect(seen).toBe("Bearer abc123"); // segredo resolvido no run time
+    await new Promise<void>((r) => srv.close(() => r()));
+  });
+
+  it("run_scenario_missing_env_secret_throws", async () => {
+    const sc: Scenario = { schemaVersion: 1, name: "auth", steps: [{ name: "get", request: { method: "GET", url: "http://127.0.0.1:1/x", headers: { Authorization: "Bearer ${{ env.MISSING }}" } } }] };
+    await expect(runScenario(sc, { secrets: {} })).rejects.toThrow(ScenarioError); // fail-fast (D6)
+  });
+});

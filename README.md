@@ -43,6 +43,30 @@ npm run web
 
 O diretório de runs é `runs/` por padrão (override: `HODOR_RUNS_DIR`).
 
+## Segredos / APIs autenticadas (M7)
+
+Para testar uma API que exige autenticação, injete o segredo via variável de ambiente
+**com o prefixo `HODOR_SECRET_`** — só essas são acessíveis ao cenário (allowlist por
+construção; o resto do `process.env` nunca é exposto). O prefixo é removido na referência:
+
+```bash
+export HODOR_SECRET_TOKEN="seu-bearer-token"   # vira ${{ env.TOKEN }} no cenário
+npm run mcp
+```
+
+No cenário, referencie como `${{ env.NOME }}`:
+
+```jsonc
+{ "request": { "method": "GET", "url": "https://api.exemplo.com/me",
+  "headers": { "Authorization": "Bearer ${{ env.TOKEN }}" } } }
+```
+
+- O valor do segredo **nunca é persistido**: é redigido (`<redacted>`) em `runs/`, `reviews/`
+  e no que volta ao agente — incluindo a forma codificada na URL e em mensagens de erro.
+- Se uma var referenciada não existir (ou tiver < 4 chars), o run falha com erro explícito
+  e o motivo é logado em stderr (`secret_dropped`, só o nome — nunca o valor).
+- Já tem uma var como `API_TOKEN`? Exporte como `HODOR_SECRET_API_TOKEN` e use `${{ env.API_TOKEN }}`.
+
 ## Testes
 
 ```bash

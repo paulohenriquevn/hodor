@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkScenario } from "./checkScenario.js";
 import { runScenario } from "./runScenario.js";
+import { redactSecretValues } from "./redactSecrets.js";
 import { persistRun } from "./runStore.js";
 import { saveVerdict } from "./verdict.js";
 import type { Scenario } from "./scenarioSchema.js";
@@ -120,6 +121,25 @@ describe("checkScenario — D2 recaptura fresca (F-tests-2)", () => {
     const res = await checkScenario(sc, { runsDir, verdictsDir, deps: { newId: () => "fresh-auth" } });
     expect(res.run.steps[1]!.request.headers!["x-token"]).toBe("tok-2"); // token novo, não tok-1
     expect(res.run.steps[1]!.response.body).toContain("tok-2");
+    await new Promise<void>((r) => srv.close(() => r()));
+  });
+});
+
+describe("checkScenario — M7 redação de segredo (T1.3)", () => {
+  it("check_scenario_redacts_secret_before_diff_no_false_regression", async () => {
+    // golden e run novo com o MESMO token num header NÃO-sensível → ambos redigidos → ok
+    let srv = createServer((_q, res) => { res.statusCode = 200; res.setHeader("content-type", "application/json"); res.end('{"v":1}'); });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+    const port = (srv.address() as AddressInfo).port;
+    const sc: Scenario = { schemaVersion: 1, name: "auth-cen", steps: [{ name: "g", request: { method: "GET", url: `http://127.0.0.1:${port}/x`, headers: { "x-token": "${{ env.TOK }}" } } }] };
+    // golden: roda com token-A, redige, persiste, aprova
+    const g = redactSecretValues(await runScenario(sc, { secrets: { TOK: "token-A" }, newId: () => "g1", now: () => 0 }), ["token-A"]);
+    await persistRun(g, runsDir!);
+    await saveVerdict({ runId: "g1", verdict: "approved", decidedAt: "x" }, verdictsDir!);
+    // check com token-B (fresco) — ambos viram <redacted> → sem regressão
+    const res = await checkScenario(sc, { runsDir, verdictsDir, deps: { secrets: { TOK: "token-B" }, newId: () => "c1" } });
+    expect(res.status).toBe("ok");
+    expect(res.run.steps[0]!.request.headers!["x-token"]).toBe("<redacted>"); // run retornado redigido
     await new Promise<void>((r) => srv.close(() => r()));
   });
 });

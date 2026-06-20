@@ -2,6 +2,7 @@ import type { RunScenarioDeps } from "./runScenario.js";
 import { listDrafts, loadDraft, defaultDraftsDir } from "./draftStore.js";
 import { checkScenario, type CheckStatus } from "./checkScenario.js";
 import { scenarioKey, goldenScenarioKeys } from "./runHistory.js";
+import { scrubSecretsFromText } from "./redactSecrets.js";
 import { defaultRunsDir } from "./runStore.js";
 import { defaultVerdictsDir } from "./verdict.js";
 
@@ -61,8 +62,10 @@ export async function replaySuite(options: ReplaySuiteOptions = {}): Promise<Sui
     } catch (err) {
       // EC-1: serviço-alvo caído / erro de execução → isola este cenário, não aborta a suíte.
       // F-dom-5: registra a causa em vez de engolir (não confunde target-down com bug interno).
+      // WIRE-2: a mensagem de erro pode conter a URL com segredo encodado → redige por valor.
       status = "error";
-      error = err instanceof Error ? err.message : String(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      error = scrubSecretsFromText(raw, Object.values(options.deps?.secrets ?? {}));
     }
     if (status === "ok") report.ok += 1;
     else if (status === "regression") report.regression += 1;
