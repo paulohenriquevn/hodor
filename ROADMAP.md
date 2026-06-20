@@ -227,15 +227,17 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
-### M7 — [ ] Injeção de env/secrets no run time
+### M7 — [x] Injeção de env/secrets no run time
 
 **Objective:** Permitir testar APIs reais **autenticadas** injetando segredos/variáveis de ambiente na execução, sem commitar o segredo — removendo o teto do gate de regressão (M6).
 
 **Definition of done:**
 
-- [ ] Interpolação de env/secret (`${{ env.NOME }}` ou equivalente) resolve de uma fonte de ambiente no run time, não só de variáveis capturadas de steps anteriores.
-- [ ] Segredos injetados NUNCA são persistidos em `runs/`/`reviews/`/`drafts/` (reusa o redator do M3/M4 em todos os sinks).
-- [ ] E2E: um cenário com header de auth via env executa contra um endpoint autenticado real e passa.
+- [x] Interpolação de env/secret (`${{ env.NOME }}` ou equivalente) resolve de uma fonte de ambiente no run time, não só de variáveis capturadas de steps anteriores.
+- [x] Segredos injetados NUNCA são persistidos em `runs/`/`reviews/`/`drafts/` (reusa o redator do M3/M4 em todos os sinks).
+- [x] E2E: um cenário com header de auth via env executa contra um endpoint autenticado real e passa.
+
+**Delivered:** v0.7.0 (2026-06-20, PR #7 — fecha o V2 e o ROADMAP V1+V2 inteiro). Injeção `${{ env.NOME }}` resolvida no run time de env vars allowlisted por prefixo **`HODOR_SECRET_*`** (strip do prefixo; `process.env` NUNCA exposto inteiro — fecha o vetor SSRF+exfiltração do M6). Segredo NUNCA persistido: `redactSecretValues` (core puro, longest-first do keploy) redige por VALOR em url/headers/body/captures + `response.statusText` + `name`, cobrindo as variantes `encodeURIComponent`/`encodeURI`/JSON-escaped, no **choke point** antes de todo `persistRun` e no `structuredContent`; error path redigido (`scrubSecretsFromText`) — alvo caído não vaza o segredo. Fonte lida no adaptador (`resolveHodorSecrets`), injetada no core via DIP (`RunScenarioDeps.secrets`); var ausente/curta = fail-fast + diagnóstico `secret_dropped` em stderr (só o nome). Remove o teto de auth do M6: E2E 401→200 com `Authorization: Bearer ${{ env.TOKEN }}` + grep prova ausência do segredo (raw E encodado) no run E no review. Review adversarial (6 agentes) achou e fechou 2 BLOCKER (statusText leak, árvore vermelha) + 5 HIGH (error-path leak, name/JSON-escaped, drop silencioso). 245 testes, redactSecrets 100% lines, 0 vulns, ZERO dep nova. Artefatos: `knowledge-base/plans/m7-env-secrets-plan.md`, `.../reviews/m7-env-secrets-review-2026-06-20.md` (READY_TO_MERGE), `.../releases/v0.7.0-release.md`, `.../roadmap-runs/M7-2026-06-20.md`. **Humano segue único aprovador (contrato M2 intacto).**
 
 **Dependencies:** M1 (interpolação), M3/M4 (redação de segredos). Desbloqueia o teto do M6.
 
