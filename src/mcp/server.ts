@@ -14,8 +14,10 @@ import {
   pruneRunHistory,
   checkScenario,
   replaySuite,
+  redactSecretValues,
   type RunEnvelope,
 } from "../core/index.js";
+import { resolveHodorSecrets } from "./secrets.js";
 
 /** Retenção (M5 D5): poda o histórico do cenário após persistir um run. Best-effort
  * (falha de poda não derruba a tool — o run já foi gravado). */
@@ -115,8 +117,12 @@ export function buildServer(): McpServer {
       outputSchema: RunEnvelopeSchema.shape,
     },
     async (scenario) => {
-      // Caller de produção da engine (wiring triad pillar a).
-      const env = await runScenario(scenario);
+      // M7: resolve segredos allowlisted (HODOR_SECRET_*) do ambiente do processo.
+      const secrets = resolveHodorSecrets(process.env);
+      const executed = await runScenario(scenario, { secrets });
+      // M7 CHOKE POINT (EC-3): redige os VALORES de segredo ANTES de TODO persistRun
+      // e do structuredContent — o segredo nunca toca o disco nem volta ao agente.
+      const env = redactSecretValues(executed, Object.values(secrets));
       const path = await persistRun(env);
       await pruneAfterPersist(env); // M5: retenção last-N por cenário
       scenarioRunCount += 1;
@@ -174,8 +180,10 @@ export function buildServer(): McpServer {
       },
     },
     async (scenario) => {
-      const { status, run, goldenRunId, noiseChanged } = await checkScenario(scenario);
-      const path = await persistRun(run); // o run novo entra no histórico p/ revisão
+      // M7: passa segredos allowlisted; checkScenario redige o run antes do diff e do retorno (T1.3).
+      const secrets = resolveHodorSecrets(process.env);
+      const { status, run, goldenRunId, noiseChanged } = await checkScenario(scenario, { deps: { secrets } });
+      const path = await persistRun(run); // o run novo (já redigido) entra no histórico p/ revisão
       await pruneAfterPersist(run);
       checkCount += 1;
       // goldenRunId → o agente busca o diff completo via web (/runs/:id/diff?vs=golden);
@@ -206,7 +214,10 @@ export function buildServer(): McpServer {
       },
     },
     async () => {
-      const r = await replaySuite();
+      // M7: cenários autenticados do catálogo recebem os segredos; checkScenario
+      // (dentro do replaySuite) redige antes de qualquer comparação. replaySuite NÃO
+      // persiste runs (só agrega status) → nenhum sink de segredo aqui.
+      const r = await replaySuite({ deps: { secrets: resolveHodorSecrets(process.env) } });
       replayCount += 1;
       // uncataloguedGoldens → o agente sabe quantos cenários aprovados NÃO estão na suíte (F-dom-2).
       const out = { allOk: r.allOk, total: r.total, ok: r.ok, regression: r.regression, noBaseline: r.noBaseline, error: r.error, uncataloguedGoldens: r.uncataloguedGoldens };
