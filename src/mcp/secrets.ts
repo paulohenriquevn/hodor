@@ -18,8 +18,20 @@ export function resolveHodorSecrets(env: Record<string, string | undefined>): Re
   for (const [key, value] of Object.entries(env)) {
     if (!key.startsWith(PREFIX)) continue;
     const name = key.slice(PREFIX.length);
-    if (name === "") continue; // EC-6: `HODOR_SECRET_` sem sufixo
-    if (value === undefined || value.length < MIN_SECRET_LEN) continue; // EC-5 vazio + EC-4 curto
+    // API-DOM-1: drop NÃO é silencioso — loga o NOME + motivo (NUNCA o valor) em stderr,
+    // senão um secret curto/vazio vira um "undefined variable" genérico 3 camadas adiante.
+    if (name === "") {
+      console.error(JSON.stringify({ event: "secret_dropped", reason: "empty_suffix" }));
+      continue; // EC-6
+    }
+    if (value === undefined || value === "") {
+      console.error(JSON.stringify({ event: "secret_dropped", name, reason: "empty_value" }));
+      continue; // EC-5
+    }
+    if (value.length < MIN_SECRET_LEN) {
+      console.error(JSON.stringify({ event: "secret_dropped", name, reason: `too_short (< ${MIN_SECRET_LEN})` }));
+      continue; // EC-4
+    }
     out[name] = value;
   }
   return out;

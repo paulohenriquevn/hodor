@@ -64,3 +64,41 @@ describe("redactSecretValues (M7)", () => {
     expect(e.steps[0]!.request.headers["Authorization"]).toBe("Bearer s3cr3t"); // intacto
   });
 });
+
+describe("redactSecretValues — sinks do review M7 (regressões)", () => {
+  it("redact_secret_values_scrubs_statustext", () => {
+    // F-xval-1: segredo ecoado no reason phrase (statusText) — persistido + vai p/ review
+    const e = env([step({ response: { status: 200, statusText: "OK s3cr3t", headers: {}, body: "", timings: { startedAt: "x", durationMs: 1 } } })]);
+    expect(redactSecretValues(e, ["s3cr3t"]).steps[0]!.response.statusText).toBe("OK <redacted>");
+  });
+
+  it("redact_secret_values_scrubs_scenario_name", () => {
+    // F-xval-2: segredo no nome do cenário
+    const e = { ...env([step()]), name: "cen-s3cr3t" };
+    expect(redactSecretValues(e, ["s3cr3t"]).name).toBe("cen-<redacted>");
+  });
+
+  it("redact_secret_values_scrubs_json_escaped_form", () => {
+    // F-xval-3: segredo com aspas no body JSON é escapado (a\"b) — redige a forma escapada
+    const secret = 'a"b\\c';
+    const escaped = JSON.stringify(secret).slice(1, -1); // a\"b\\c
+    const e = env([step({ request: { method: "POST", url: "http://x", headers: {}, body: `{"k":"${escaped}"}` } })]);
+    const out = redactSecretValues(e, [secret]);
+    expect(out.steps[0]!.request.body).toBe('{"k":"<redacted>"}'); // não reconstrói no JSON.parse
+  });
+});
+
+import { scrubSecretsFromText } from "./redactSecrets.js";
+describe("scrubSecretsFromText — error path (WIRE-1)", () => {
+  it("scrub_secrets_from_text_redacts_raw_and_encoded", () => {
+    const secret = "a/b+c=d";
+    const msg = `request failed: http://x?q=${encodeURIComponent(secret)} (header had ${secret})`;
+    const out = scrubSecretsFromText(msg, [secret]);
+    expect(out).not.toContain(secret);
+    expect(out).not.toContain(encodeURIComponent(secret));
+    expect(out).toContain("<redacted>");
+  });
+  it("scrub_secrets_from_text_noop_empty", () => {
+    expect(scrubSecretsFromText("nada aqui", [])).toBe("nada aqui");
+  });
+});

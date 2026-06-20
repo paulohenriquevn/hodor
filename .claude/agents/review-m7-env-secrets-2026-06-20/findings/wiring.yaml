@@ -1,0 +1,159 @@
+agent: wiring
+cycle: review
+milestone: m7-env-secrets
+date: 2026-06-20
+reviewer: wiring-reviewer (FAANG gate)
+scope: |
+  Wiring triad per new M7 symbol (redactSecretValues @ core/redactSecrets +
+  re-export core/index; resolveHodorSecrets @ mcp/secrets). Every sink that
+  persists or returns a run was traced for redaction coverage. Hunt for a
+  forgotten sink that emits a secret-bearing run/string without redaction.
+
+summary:
+  symbols_reviewed: 2
+  production_callers_confirmed: true
+  dead_exports: 0
+  forgotten_sink_found: true
+  verdict: NEEDS_FIXES
+
+symbol_wiring:
+  - symbol: redactSecretValues
+    defined_at: src/core/redactSecrets.ts:15
+    exported_at: src/core/index.ts:74
+    triad:
+      caller:
+        - src/mcp/server.ts:125   # run_scenario — production, success path
+        - src/core/checkScenario.ts:46  # checkScenario — production, internal redaction
+      integration_test:
+        - src/m7-e2e.test.ts:52   # e2e: success path, run persisted is redacted (raw+encoded)
+        - src/core/checkScenario.test.ts:136
+        - src/core/redactSecrets.test.ts (unit, 8 cases)
+      runtime_metric:
+        - src/mcp/server.ts:129   # stderr event=run_scenario (metadata only, no secret)
+    classification: wired (success path). Error/throw path NOT covered — see WIRE-1.
+    dead: false
+
+  - symbol: resolveHodorSecrets
+    defined_at: src/mcp/secrets.ts:15
+    triad:
+      caller:
+        - src/mcp/server.ts:121   # run_scenario — production
+        - src/mcp/server.ts:184   # check_scenario — production
+        - src/mcp/server.ts:220   # replay_suite — production
+      integration_test:
+        - src/mcp/secrets.test.ts:15,20,25 (unit, allowlist + EC-4/5/6)
+        - src/m7-e2e.test.ts:53,54 (e2e via process.env)
+      runtime_metric: covered indirectly via run_scenario/check_scenario/replay_suite stderr events
+    classification: fully wired
+    dead: false
+
+sink_analysis:
+  - sink: run_scenario tool (MCP)
+    path: src/mcp/server.ts:122-134
+    persists: true (persistRun @126)
+    returns: true (structuredContent=env @134)
+    redacted_before_sink: true
+    note: redactSecretValues @125 is the choke point BEFORE both persistRun and structuredContent. Success path correct.
+
+  - sink: check_scenario tool (MCP)
+    path: src/mcp/server.ts:181-187
+    persists: true (persistRun @186)
+    returns: metadata-only (status/runId/goldenRunId/noiseChanged @187 — no run body)
+    redacted_before_sink: true
+    note: checkScenario redacts internally (checkScenario.ts:46) before returning run; persisted run already redacted.
+
+  - sink: replay_suite tool (MCP)
+    path: src/mcp/server.ts:210-216
+    persists: false (replaySuite aggregates counts; does not persist)
+    returns: aggregate counts only (out @213 excludes results[])
+    redacted_before_sink: n/a (no run body crosses boundary)
+    caveat: SuiteItemResult.error (replaySuite.ts:65) CAN carry an unredacted error message, but replay_suite tool output (out @213) omits results[], so it does NOT reach the MCP response or the stderr event from replay_suite. Confirmed not leaked via this tool.
+
+  - sink: run_request tool (MCP — M0)
+    path: src/mcp/server.ts:88-104
+    persists: true (persistRun @90)
+    returns: true (structuredContent=env @104)
+    redacted_before_sink: not applicable
+    note: M0 takes a literal request; no secret injection (runScenario/interpolate seeding never runs here). No env.* variable seeding. CONFIRMED no secret path — correctly left un-redacted.
+
+  - sink: web POST /runs/:id/verdict
+    path: src/web/server.ts (postVerdict ~103-129)
+    persists: true (saveReviewArtifact)
+    returns: 303 redirect (no run body)
+    redacted_before_sink: true (defense by construction)
+    note: loadRun reads a run ALREADY redacted at persist time; buildReviewArtifact normalizes the on-disk (redacted) run. No fresh secret enters here. CONFIRMED safe.
+
+findings:
+  - id: WIRE-1
+    severity: HIGH
+    title: Secret-bearing URL leaks unredacted via RequestExecutionError on the request-failure path (forgotten sink)
+    location: src/core/executeRequest.ts:54
+    evidence: |
+      executeRequest builds the thrown error message embedding the FULL interpolated URL:
+        const reason = controller.signal.aborted ? `timeout: ${url}` : `request failed: ${url}`;
+        throw new RequestExecutionError(reason, { cause });
+      When a scenario injects a secret into the URL/query (e.g. `?q=${{ env.QKEY }}`),
+      interpolateRequest (interpolate.ts:41) substitutes encodeURIComponent(secret) into
+      `url`. On a network failure / timeout (target down, wrong port, connection reset),
+      `url` — carrying the encoded secret — is placed verbatim into the exception message.
+
+      redactSecretValues runs ONLY on the success path (server.ts:125 / checkScenario.ts:46),
+      AFTER runScenario returns an envelope. The throw path has NO redaction hook:
+        - run_scenario (server.ts:122): `await runScenario(...)` has NO try/catch — the
+          RequestExecutionError propagates out of the tool handler to the MCP agent
+          (isError:true with the raw message) and to stderr/unhandled-rejection.
+        - check_scenario (server.ts:181): same propagation via checkScenario → runScenario.
+      This is the exact failure mode M7's threat model exists to prevent (secret never
+      leaves the process boundary), and it is wide open on the error path.
+    why_dangerous: |
+      Realistic and common: an authenticated scenario whose target is down/slow is the
+      normal regression-gate situation. The error message returns to the MCP agent
+      (the LLM client) and is logged — exactly the surfaces M7 promises never see a secret.
+      Header-borne secrets (Authorization) are NOT in the message (only ${url}); URL/query
+      and body-interpolated secrets are. The M7 design already encodes secrets into the URL
+      (interpolate.ts:41), so query-param API keys are a first-class, intended use case.
+    coverage_gap: |
+      m7-e2e.test.ts covers ONLY: (a) success path 200 → persisted run redacted (l.52-93),
+      and (b) missing-secret → ScenarioError BEFORE any request (l.95-105). There is NO test
+      for a request that REACHES the network and FAILS while carrying a secret in the URL.
+      The leak is therefore both unwired and untested.
+    suggested_fix: |
+      Redact secret values from RequestExecutionError messages before they cross the
+      tool/agent/stderr boundary. Options: (1) wrap runScenario in run_scenario/check_scenario
+      with a catch that scrubs Object.values(secrets) (raw + encodeURIComponent) from
+      err.message before rethrowing; OR (2) stop embedding the raw URL in the message
+      (executeRequest.ts:54) — e.g. include only host+path or a redacted url, keeping the
+      raw URL solely in the structured run (which IS redacted). Add an e2e regression test:
+      secret in URL + unreachable target → assert error surfaced to agent/stderr contains
+      neither the raw nor the encodeURIComponent form of the secret.
+
+  - id: WIRE-2
+    severity: LOW
+    title: replaySuite.SuiteItemResult.error can hold an unredacted secret (latent, not currently exposed)
+    location: src/core/replaySuite.ts:65
+    evidence: |
+      `error = err instanceof Error ? err.message : String(err)` captures the same
+      RequestExecutionError message (WIRE-1) into SuiteReport.results[].error. Today the
+      replay_suite tool (server.ts:213) builds `out` WITHOUT results[], so this string does
+      NOT reach the MCP response nor the stderr event. It is contained for now.
+    why_low: Not currently a live sink — no production path emits results[]. Flagged because
+      it is one refactor away from becoming a leak (e.g. if results[] is later surfaced in the
+      tool output or the web app), and it shares the same root cause as WIRE-1.
+    suggested_fix: Fixing WIRE-1 at the source (scrub in executeRequest message or at the
+      runScenario boundary) closes this transitively. No separate action required if WIRE-1
+      is fixed at the source rather than only in the two tool handlers.
+
+observability_check:
+  stderr_events_audited:
+    - server.ts:94 (run_request), :129 (run_scenario), :192 (check_scenario), :224 (replay_suite), :28/:30 (prune)
+  result: All stderr events log METADATA ONLY (event name, status, runId, path, step/count).
+    None serialize a run body or a secret value. The success-path observability is clean.
+  exception_to_clean_observability: WIRE-1 — an UNHANDLED RequestExecutionError reaches stderr
+    (via SDK/unhandled-rejection) with the secret-bearing URL in its message. This is the one
+    stderr leak vector and is the same defect as WIRE-1.
+
+dead_exports: []  # both M7 symbols have ≥1 production caller; no orphan exports detected
+
+blockers: []
+highs:
+  - WIRE-1

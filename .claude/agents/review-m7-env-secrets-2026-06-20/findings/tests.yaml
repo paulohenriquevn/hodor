@@ -1,0 +1,211 @@
+agent: tests
+milestone: m7-env-secrets
+date: 2026-06-20
+scope: >
+  Revisão de testes do M7 (segurança/segredos). Foco: os testes PROVAM a
+  não-existência de vazamento? Cobertura dos 3 DoDs + EC-1..EC-6 + choke point.
+  Suite-of-truth = a redação por VALOR (redactSecretValues) e a resolução por
+  prefixo (resolveHodorSecrets).
+
+suite_health:
+  command: "npx vitest run"
+  full_suite: "7 failed | 238 passed (245) — as 7 falhas são EXCLUSIVAMENTE os dois probes adversariais _probe_sec.test.ts e _probe_sec2.test.ts"
+  excluding_probes: "npx vitest run --exclude='**/_probe_*' → 38 files / 238 passed (0 fail). M0–M6 verdes."
+  probe_files_git_state: "untracked (?? em git status) — NÃO commitados; são provas adversariais no working tree, não quebram o estado commitado da branch."
+  coverage:
+    command: "npx vitest run --coverage (M7 files)"
+    redactSecrets_ts: "96.42% stmts | 80% branch | 100% funcs | 100% lines (linha 38 = único branch descoberto). >= 90% OK."
+    checkScenario_ts: "100% stmts | 81.81% branch | 100% lines."
+    note: "Cobertura de LINHA alta NÃO prova ausência de vazamento — os probes mostram sinks executados (statusText/name) sem assert que os cubra."
+
+dod_coverage:
+  dod_1_env_resolves_at_runtime:
+    status: COVERED
+    evidence:
+      - "runScenario.test.ts:135 run_scenario_resolves_env_secret_in_header (Bearer abc123 chega no servidor)"
+      - "secrets.test.ts:14 resolve_hodor_secrets_only_prefixed; :60 run_scenario_tool_does_not_persist_secret"
+  dod_2_secret_never_persisted:
+    status: PARTIALLY_PROVEN
+    note: >
+      DoD #2 é uma afirmação ABSOLUTA ("segredos NUNCA persistidos em
+      runs/reviews/drafts"). Os testes provam a ausência para os sinks
+      NOMEADOS no plano (url, headers, body, captures, response body/headers),
+      mas NÃO para statusText nem para o campo name — ambos são campos
+      persistidos (runSchema.ts:22 statusText; :61 name) que fluem para runs/ E
+      para o artefato reviews/ (reviewArtifact.ts:22 statusText; :32/:54
+      scenarioName). Os probes provam que um segredo ecoado no reason phrase
+      sobrevive à redação até o artefato commitável.
+    evidence:
+      - "m7-e2e.test.ts:77-90 GREP do arquivo inteiro (raw + encodeURIComponent) no run E no review — forte"
+      - "checkScenario.test.ts:129 redação antes do diff (sem falsa regressão) — bom"
+      - "_probe_sec.test.ts / _probe_sec2.test.ts — CONTRA-PROVA: statusText e JSON-escape escapam"
+  dod_3_e2e_auth_real:
+    status: COVERED
+    evidence:
+      - "m7-e2e.test.ts:52 e2e_m7_authenticated_scenario_never_persists_secret — servidor 401-sem-Bearer/200-com; status==200 prova injeção"
+
+edge_case_coverage:
+  EC1_encoded_form:
+    status: COVERED
+    evidence: "redactSecrets.test.ts redact_secret_values_scrubs_url_encoded_form (RED→GREEN); redactSecrets.ts:21 adiciona encodeURIComponent(v) ao set de variantes."
+  EC2_e2e_special_chars_query_body:
+    status: COVERED_STRONG
+    evidence: "m7-e2e.test.ts:62-64 QKEY='a/b+c=d' em query+body; :79-80 grep nega forma crua E encodada (a%2Fb%2Bc%3Dd)."
+  EC3_single_choke_point:
+    status: COVERED
+    evidence: "checkScenario.test.ts:78 check_scenario_finds_golden_before_persisting (core não persiste); server.ts:125 redactSecretValues imediatamente antes de persistRun (verificado via source)."
+  EC4_too_short_ignored:
+    status: COVERED
+    evidence: "secrets.test.ts:24 resolve_hodor_secrets_skips_too_short (HODOR_SECRET_T='a' → {})."
+  EC5_empty_ignored:
+    status: COVERED
+    evidence: "secrets.test.ts:19 resolve_hodor_secrets_skips_empty_and_no_suffix (HODOR_SECRET_X='' ignorado)."
+  EC6_no_suffix_ignored:
+    status: COVERED
+    evidence: "secrets.test.ts:19 (HODOR_SECRET_= ignorado)."
+
+findings:
+  - id: TESTS-M7-001
+    severity: HIGH
+    title: "Nenhum teste prova ausência de vazamento via response.statusText (reason phrase) — probe demonstra leak no run E no artefato de review commitável"
+    dod: "DoD #2 (segredo NUNCA persistido)"
+    file: src/core/redactSecrets.ts
+    lines: "52-56"
+    detail: >
+      redactSecretValues redige response.headers e response.body mas NÃO
+      response.statusText. statusText é campo persistido (runSchema.ts:22) e é
+      copiado para o artefato versionável commitável (reviewArtifact.ts:22 via
+      NormalizedStepSchema). Um servidor que ecoa o token no reason phrase
+      (ex.: "Unauthorized: token <X> invalid", ou 200 "OK token=<X>") faz o
+      segredo sobreviver à redação. Não há NENHUM teste commitado que asserte a
+      ausência do segredo em statusText. Os probes adversariais não-commitados
+      (_probe_sec.test.ts:31, :91; _probe_sec2.test.ts:9) provam empiricamente
+      o leak: JSON.stringify(redacted).includes(SECRET) === true tanto no run
+      quanto no artifact.
+    proof:
+      command: "npx vitest run src/core/_probe_sec.test.ts src/core/_probe_sec2.test.ts"
+      result: "FAIL — expected false (no leak), received true (secret presente após redação)"
+    weak_assertion: >
+      O e2e (m7-e2e.test.ts) grep-a o arquivo inteiro — forte — porém só com
+      QKEY/TOKEN, valores que jamais aparecem em statusText neste fluxo. A
+      cobertura do invariante 'NUNCA persistido' está incompleta: prova-se para
+      headers/body/url, não para a superfície statusText.
+    required_test: >
+      Teste que rode um servidor ecoando o secret no reason phrase, redija, e
+      grep-e o run E o reviewArtifact persistidos negando o secret. Hoje esse
+      teste só existe como probe RED não-commitado — ou seja, a feature está
+      provadamente incompleta para o sink, OU o probe deveria virar teste de
+      regressão GREEN após o fix em redactSecrets.ts.
+
+  - id: TESTS-M7-002
+    severity: MEDIUM
+    title: "Classe de segredo que ESCAPA a redação por valor: forma JSON-escaped (segredo com aspas) — sem teste; e2e usa só QKEY sem aspas"
+    dod: "DoD #2"
+    file: src/core/redactSecrets.ts
+    lines: "26-30"
+    detail: >
+      A redação é split/join sobre o valor cru e encodeURIComponent. Quando um
+      servidor ecoa um segredo contendo aspas dentro de uma JSON string, o body
+      persistido contém a forma escapada (tok\"en) — a substring crua é
+      quebrada, então o grep do e2e PASSA, mas JSON.parse reconstrói o segredo
+      (recuperável). O e2e (EC-2) escolheu QKEY='a/b+c=d' que NÃO contém aspas,
+      logo essa classe nunca é exercida. Probe _probe_sec.test.ts:55 e
+      _probe_sec2.test.ts:33 demonstram a reconstrução.
+    weak_assertion: >
+      Esta é exatamente a categoria 'assert de segurança fraco': grep de
+      substring crua passa enquanto o segredo permanece semanticamente
+      recuperável via desserialização. Falta um teste que faça JSON.parse do
+      body persistido e asserte que o valor reconstruído != secret.
+
+  - id: TESTS-M7-003
+    severity: MEDIUM
+    title: "Campo envelope.name (scenarioName) nunca é redigido nem testado — persistido no run e no artifact"
+    dod: "DoD #2"
+    file: src/core/redactSecrets.ts
+    lines: "42-43"
+    detail: >
+      redactSecretValues espalha ...env mas não toca env.name. name é
+      persistido (runSchema.ts:61) e propagado a reviewArtifact (scenarioName,
+      reviewArtifact.ts:54). Se um valor-segredo aparecer no name, vaza.
+      Realismo menor (name é fornecido pelo usuário e ${{ env.X }} não é
+      resolvido dentro do name), por isso MEDIUM e não HIGH — mas o plano
+      afirma 'NUNCA persistido' de forma absoluta e não há teste cobrindo o
+      campo. Probe _probe_sec.test.ts:47 demonstra.
+
+  - id: TESTS-M7-004
+    severity: LOW
+    title: "Variante de encoding coberta é só encodeURIComponent; encodeURI (não-Component) não é redigida"
+    dod: "DoD #2 / EC-1"
+    file: src/core/redactSecrets.ts
+    lines: "21"
+    detail: >
+      O set de variantes é {raw, encodeURIComponent}. interpolateRequest usa
+      encodeURIComponent, portanto a forma persistida pela engine real É a
+      Component (coberta). O probe _probe_sec.test.ts:76 injeta manualmente uma
+      forma encodeURI que a engine nunca produz — leak hipotético, não
+      alcançável pelo fluxo de produção atual. Defensável como YAGNI, mas
+      registrar: se algum caller futuro persistir uma URL com encodeURI, vaza.
+    recommendation: "Documentar a invariante 'a engine só emite encodeURIComponent' num comentário/teste, OU adicionar encodeURI ao set por defesa em profundidade."
+
+  - id: TESTS-M7-005
+    severity: LOW
+    title: "Probes adversariais (_probe_sec*.test.ts) deixados no working tree quebram `npx vitest run` (7 RED)"
+    file: src/core/_probe_sec.test.ts
+    detail: >
+      Os arquivos são untracked (não commitados), então não violam o gate de
+      'failing tests on committed branch'. Porém deixá-los no tree faz a suite
+      ficar vermelha para qualquer um que rode `npx vitest run` sem --exclude.
+      Decisão necessária: (a) se os leaks de TESTS-M7-001..003 forem aceitos
+      como em-escopo → converter os probes relevantes em testes de regressão
+      GREEN após o fix; (b) se forem fora-de-escopo (ADR) → remover os probes e
+      registrar a decisão. Não deixar probes RED órfãos no tree.
+
+  - id: TESTS-M7-006
+    severity: INFO
+    title: "mcp_does_not_expose_non_prefixed_env prova PATH inacessível, mas via erro — não via redação"
+    file: src/mcp/secrets.test.ts
+    lines: "80-87"
+    detail: >
+      O teste prova que ${{ env.PATH }} → ScenarioError (resolveHodorSecrets só
+      expõe prefixo HODOR_SECRET_, então PATH nunca entra no mapa de secrets e a
+      interpolação falha fail-fast). É a prova CORRETA do mecanismo: PATH não
+      vaza porque nunca chega a uma request, não porque é redigido depois.
+      Sólido. Reforço opcional: assert adicional de que nenhum arquivo foi
+      escrito em runs/ nesse caminho de erro (hoje só checa isError).
+    assessment: POSITIVE
+
+  - id: TESTS-M7-007
+    severity: INFO
+    title: "Pirâmide e disciplina de teste — saudáveis"
+    detail: >
+      Bom equilíbrio: unit (redactSecrets, resolveHodorSecrets), integração
+      (runScenario/checkScenario contra http real efêmero), e2e (m7-e2e via
+      MCP InMemoryTransport contra endpoint autenticado real). Nomes descrevem
+      comportamento (run_scenario_resolves_env_secret_in_header). AAA claro.
+      Sem .only/.skip (grep confirmou). Determinístico (now/newId injetados,
+      portas :0). e2e grep-a o arquivo inteiro (raw+encoded) — padrão correto
+      para prova-por-ausência, modulo os sinks dos findings 001-003.
+    assessment: POSITIVE
+
+positive_observations:
+  - "EC-1 com RED→GREEN explícito (redact_secret_values_scrubs_url_encoded_form) prova que sem a redação encodada o segredo vazaria na url — atende ao pedido do review."
+  - "EC-2 e2e grep nega forma crua E encodada (a%2Fb%2Bc%3Dd) no run E no review — prova-por-ausência forte."
+  - "EC-3 choke point validado: core não persiste (check_scenario_finds_golden_before_persisting) e a redação está no adaptador antes de persistRun."
+  - "EC-4/5/6 cobertos por unit determinístico em secrets.test.ts."
+  - "redactSecrets.ts cobertura 96.42% stmts / 100% lines — acima do piso 90%."
+
+verdict:
+  highest_severity: HIGH
+  has_blocker: false
+  summary: >
+    A coragem do milestone é provar a NÃO-EXISTÊNCIA de vazamento. Os 3 DoDs e
+    EC-1..EC-6 estão cobertos para os sinks nomeados no plano, e o e2e faz a
+    prova-por-ausência corretamente (grep do arquivo inteiro, raw + encoded).
+    PORÉM a prova é incompleta: statusText (HIGH, vaza até o artefato
+    commitável) e a forma JSON-escaped (MEDIUM, recuperável via JSON.parse)
+    escapam à redação por valor e NÃO têm teste commitado — provados pelos
+    probes adversariais RED no working tree. A afirmação absoluta do DoD #2
+    ('NUNCA persistido') não está totalmente provada. Recomendo: decidir
+    escopo (fix redactSecrets para statusText/name + converter probes em
+    regressão GREEN, OU ADR documentando os sinks fora de escopo) antes de
+    READY_TO_MERGE.

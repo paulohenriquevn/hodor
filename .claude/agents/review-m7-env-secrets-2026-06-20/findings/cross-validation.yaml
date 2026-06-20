@@ -1,0 +1,170 @@
+agent: review-m7-env-secrets-cross-validation
+review_target: origin/main..develop for plan m7-env-secrets
+plan: .claude/knowledge-base/plans/m7-env-secrets-plan.md
+generated_at: 2026-06-20
+verdict: NEEDS_FIXES
+
+# ────────────────────────────────────────────────────────────────────────
+# Chain re-run (this review, develop @ 005af21)
+# ────────────────────────────────────────────────────────────────────────
+chain_rerun:
+  npx_vitest_run_full_tree: FAIL   # 7 failed / 238 passed (245) — 2 UNTRACKED probe files RED
+  npx_vitest_committed_m7_only: PASS  # 32/32 (redactSecrets,runScenario,checkScenario,secrets,m7-e2e)
+  npx_vitest_run_excluding_probes: PASS  # 238/238
+  tsc_noEmit: FAIL_ONLY_ON_PROBES  # 8 TS2532 errors, ALL inside src/core/_probe_sec*.test.ts; committed code clean
+  npm_audit: PASS  # found 0 vulnerabilities
+  zero_new_deps: PASS  # package.json + package-lock.json UNTOUCHED across whole M7 range
+  coverage_core_new: PASS  # redactSecrets.ts 96.42% stmts / 100% lines (gate ≥90%); all-files 98.46%
+  dip_core_no_web_mcp_import: PASS  # grep 'from "../web"|"../mcp"' src/core/ = empty
+  dip_core_no_secret_env_read: PASS_WITH_NOTE  # core never reads process.env for SECRETS; pre-existing dir helpers (HODOR_RUNS_DIR etc.) match the plan's literal grep but are not secret reads — plan DoD grep is mis-specified (see F-xval-6)
+
+# ────────────────────────────────────────────────────────────────────────
+plan_tasks_summary:
+  total_tasks: 5            # T1.1 T1.2 T1.3 T2.1 T3.1
+  fully_implemented: 5
+  partial: 0
+  missing: 0
+  diverged: 0
+
+task_to_commit:
+  - task: T1.1 RunScenarioDeps.secrets + namespace env.*
+    commit: e5b7c04
+    files_declared: [src/core/runScenario.ts, src/core/runScenario.test.ts]
+    files_changed: [src/core/runScenario.ts, src/core/runScenario.test.ts]
+    status: IMPLEMENTED
+    evidence: "runScenario seeds variables['env.'+k]=secrets[k] before step 1 (runScenario.ts:30-31); secrets? optional preserves M1 callers; interpolate reused unchanged"
+  - task: T1.2 redactSecretValues (por valor, longest-first)
+    commit: e5b7c04
+    files_declared: [src/core/redactSecrets.ts (NEW), src/core/redactSecrets.test.ts (NEW), src/core/index.ts]
+    files_changed: [src/core/redactSecrets.ts, src/core/redactSecrets.test.ts, src/core/index.ts]
+    status: IMPLEMENTED_WITH_SCOPE_GAP
+    evidence: "redactSecrets.ts scrubs url/headers/body/captures + response body/headers; raw+encodeURIComponent variants (EC-1); longest-first sort; split/join (metachar-safe); no mutation (spread). BUT does NOT scrub response.statusText nor envelope.name (both persisted) — see F-xval-1/F-xval-2"
+  - task: T1.3 checkScenario redige antes do diff e do retorno
+    commit: e5b7c04
+    files_declared: [src/core/checkScenario.ts, src/core/checkScenario.test.ts]
+    files_changed: [src/core/checkScenario.ts, src/core/checkScenario.test.ts]
+    status: IMPLEMENTED
+    evidence: "checkScenario.ts:46 redactSecretValues(executed, Object.values(deps.secrets)) BEFORE findGoldenRun/diffRuns and before returning run — returned run always redacted; prevents false-diff on non-sensitive header"
+  - task: T2.1 resolveHodorSecrets + wire nas tools MCP
+    commit: 8db4253
+    files_declared: [src/mcp/server.ts, src/mcp/secrets.test.ts (NEW)]
+    files_changed: [src/mcp/server.ts, src/mcp/secrets.ts (NEW), src/mcp/secrets.test.ts (NEW)]
+    status: IMPLEMENTED
+    scope_note: "src/mcp/secrets.ts created but NOT in plan 'Files to edit' (plan listed only server.ts + secrets.test.ts). Benign extraction into its own module; arguably better SRP. MINOR scope-creep, not a divergence."
+    evidence: "resolveHodorSecrets() prefix-allowlist HODOR_SECRET_*, strip prefix, skip empty/no-suffix/<4chars (secrets.ts:16-26). run_scenario redacts BEFORE persistRun+structuredContent (server.ts:125). check_scenario/replay_suite delegate redaction to checkScenario internals. process.env NEVER returned wholesale."
+  - task: T3.1 E2E e2e_m7_authenticated_scenario_never_persists_secret
+    commit: 560f00b
+    files_declared: [src/m7-e2e.test.ts (NEW), CHANGELOG.md]
+    files_changed: [src/m7-e2e.test.ts (NEW), CHANGELOG.md]
+    status: IMPLEMENTED
+    evidence: "Real ephemeral auth server (401/200); env-injected token → 200 (DoD#3); persisted run asserts NOT contain TOKEN, QKEY raw, encodeURIComponent(QKEY) + contains <redacted> (DoD#2); review artifact also clean; 2nd test: missing-secret fail-fast + non-prefixed env unreachable. EC-2 (special chars in query+body, raw+encoded) genuinely covered."
+
+acceptance_criteria_summary:
+  total: 5                  # one Acceptance line per task
+  satisfied: 5
+  unverified: 0
+  false_claims: 0
+  note: "All task-level Acceptance criteria verified satisfied by committed tests + re-run. Gaps below are at the PLAN-SCOPE level (sinks the plan never enumerated), not unmet acceptance criteria."
+
+adr_compliance:
+  total_adrs: 6             # D1..D6
+  respected: 6
+  diverged_without_new_adr: 0
+  detail:
+    D1_dip_adapter_reads_env: RESPECTED   # only src/mcp/{server,secrets}.ts read process.env for secrets; core receives via deps
+    D2_allowlist_prefix: RESPECTED        # resolveHodorSecrets toEqual proves process.env not exposed; AWS/PATH ignored
+    D3_redact_by_value_longest_first: RESPECTED_WITH_SINK_GAP  # algorithm correct; sink coverage incomplete (statusText/name) — F-xval-1/2
+    D4_seed_env_namespace_reuse_interpolate: RESPECTED
+    D5_drafts_template_no_redaction: RESPECTED
+    D6_missing_var_scenario_error: RESPECTED  # interpolate throws ScenarioError; e2e asserts isError
+
+roadmap_m7_dods:
+  - dod: "DoD #1 — ${{ env.NOME }} resolve no run time"
+    status: SATISFIED
+    evidence: "T1.1 seeds env.* + T2.1 resolveHodorSecrets; e2e returns 200 (auth via env worked). The M6 auth ceiling is REALLY removed — authenticated scenario now resolves the secret at run time and executes against the real endpoint."
+  - dod: "DoD #2 — segredo NUNCA persistido em runs/reviews/drafts"
+    status: PARTIALLY_SATISFIED
+    evidence: "Covered for url/headers/body/captures + response body/headers (raw+encodeURIComponent) — e2e green. GAP: response.statusText (persisted schema field runSchema.ts:22 AND carried into review artifact reviewArtifact.ts:22) is NOT redacted; a server echoing the secret into the HTTP reason phrase leaks it into runs/ AND the committable reviews/ sink. Proven by working-tree probes _probe_sec.test.ts + _probe_sec2.test.ts. Also: JSON-escaped echo (secret containing a quote) reconstructs on JSON.parse; encodeURI(non-Component) form not covered (lower real-world reach — interpolateRequest only ever emits encodeURIComponent)."
+  - dod: "DoD #3 — E2E auth via env contra endpoint real passa"
+    status: SATISFIED
+    evidence: "src/m7-e2e.test.ts real http server requires Bearer; injected token yields 200; test is green (committed)."
+
+goal_metric:
+  test: e2e_m7_authenticated_scenario_never_persists_secret
+  status: GREEN_AS_WRITTEN
+  caveat: "Green because the committed e2e exercises the secret only in url/header/body — exactly the sinks redaction covers. It does NOT exercise a server that echoes the secret into statusText, so the statusText leak (DoD#2) is invisible to the Goal test. The probes that DO exercise it are RED and uncommitted."
+
+plan_drift:
+  plan_edited_after_implement: false
+  details: "Plan committed at 2f48445 (v1.1) BEFORE impl commits e5b7c04/8db4253/560f00b. Plan file is frozen relative to implementation. No mid-flight edit."
+
+working_tree_state:
+  clean: false
+  untracked_test_files: [src/core/_probe_sec.test.ts, src/core/_probe_sec2.test.ts]
+  impact: "cycle-review pre-condition 'No uncommitted changes (review reads a stable state)' VIOLATED. These two files make `npx vitest run` RED (7 failures) and `tsc --noEmit` RED (8 errors) — the plan Global DoD 'Todos os testes verdes; tsc 0 erros' and the cycle-review hard gate 'Failing tests on the working branch' both fail in the CURRENT tree."
+
+findings:
+  - id: F-xval-1
+    severity: BLOCKER
+    file: src/core/redactSecrets.ts
+    plan_ref: T1.2 Acceptance + ADR D3 + ROADMAP §M7 DoD #2 ("segredo NUNCA persistido em runs/reviews/drafts")
+    summary: "redactSecretValues does NOT scrub response.statusText — a persisted field — so a secret echoed into the HTTP reason phrase leaks into runs/ AND the committable reviews/ artifact."
+    evidence: |
+      redactSecrets.ts scrubs response.headers and response.body but NOT response.statusText
+      (lines 52-56 omit statusText). statusText is a persisted schema field (runSchema.ts:22)
+      and is copied into the review artifact (reviewArtifact.ts:22 — a git-committable sink).
+      Working-tree probe _probe_sec.test.ts ("statusText: leaks?" + e2e variant) and
+      _probe_sec2.test.ts ("statusText survives into the committed review artifact") both
+      FAIL: JSON.stringify(redacted).includes(SECRET) === true.
+      Real reach: any upstream that sets res.writeHead(status, `...${token}...`) reason phrase.
+    recommended_action: "Add statusText to the scrubbed response fields in redactSecretValues (response.statusText = scrub(step.response.statusText)). Add a committed regression test mirroring the probe. Then DELETE the probe files."
+  - id: F-xval-2
+    severity: HIGH
+    file: src/core/redactSecrets.ts
+    plan_ref: T1.2 + DoD #2
+    summary: "redactSecretValues does not scrub the envelope-level `name` (scenario name on RunEnvelope) — a secret in the scenario name persists."
+    evidence: "_probe_sec.test.ts 'env.name: leaks if secret in scenario name?' FAILs. redactSecrets.ts spreads {...env} and only rewrites steps[]; top-level fields (name) pass through. Lower likelihood than statusText (operator would have to put a secret literal in the scenario name) but it IS a persisted/committable field."
+    recommended_action: "Scrub top-level string fields too, or document (ADR) that scenario name is operator-controlled non-secret. Prefer scrubbing — defense in depth matches D3 intent."
+  - id: F-xval-3
+    severity: HIGH
+    file: src/core/redactSecrets.ts
+    plan_ref: T1.2 + ADR D3 (longest-first by value) + DoD #2
+    summary: "JSON-escaped form of a secret is not redacted: a secret containing a double-quote, when echoed inside a JSON string by the server, is stored escaped (\\\") and reconstructs the raw secret on JSON.parse."
+    evidence: "_probe_sec.test.ts 'JSON-escaped secret in body' and _probe_sec2.test.ts 'JSON body echo ... reconstructs secret' FAIL. redactSecretValues only matches {raw, encodeURIComponent(raw)} — not the JSON-string-escaped variant. JSON.parse(redactedBody).received still contains the quote-bearing secret."
+    recommended_action: "Add the JSON-escaped variant (JSON.stringify(v).slice(1,-1)) to the variant set, OR document the residual risk in an ADR. Note real reach requires the secret to contain a JSON metachar (quote/backslash)."
+  - id: F-xval-4
+    severity: MEDIUM
+    file: src/core/redactSecrets.ts
+    plan_ref: T1.2 + EC-1 (encoding variants)
+    summary: "Only encodeURIComponent variant is covered; encodeURI(non-Component) form of a secret in a URL is not redacted."
+    evidence: "_probe_sec.test.ts 'encodeURI (non-Component) form in url' FAILs. Reach is LOW in practice: interpolateRequest (interpolate.ts:36-37) always uses encodeURIComponent for URL values, so the real Hodor pipeline never emits the encodeURI form into a persisted run. The probe constructs the envelope synthetically. Listed for completeness + because external/imported runs could carry it."
+    recommended_action: "Optionally add encodeURI(v) to variants for defense in depth, or document that the pipeline only ever produces encodeURIComponent so the gap is unreachable in-product."
+  - id: F-xval-5
+    severity: BLOCKER
+    file: src/core/_probe_sec.test.ts, src/core/_probe_sec2.test.ts
+    plan_ref: Global DoD ("Todos os testes verdes; tsc 0 erros") + cycle-review pre-condition (stable tree) + hard gate (no failing tests on branch)
+    summary: "Two untracked probe test files in the working tree make `npx vitest run` RED (7 failures) and `tsc --noEmit` RED (8 errors). The review pre-condition of a clean/stable tree is violated and the green-suite Global DoD does not hold in the current state."
+    evidence: "git status --porcelain shows '?? src/core/_probe_sec.test.ts' and '?? src/core/_probe_sec2.test.ts'. Full-tree vitest: 7 failed/238 passed. tsc: 8 TS2532, all inside those two files. Committed M7 tests alone: 32/32 PASS; excluding probes: 238/238 PASS."
+    recommended_action: "Resolve before READY_TO_MERGE: either (a) convert the 4 distinct probe scenarios (statusText, name, JSON-escape, encodeURI) into committed regression tests after F-xval-1/2/3 are fixed, then DELETE the probe files; or (b) if deferring some gaps, delete the probes and file ADR(s) for the deferred residual risk. The tree must be green + clean before review can certify READY_TO_MERGE."
+  - id: F-xval-6
+    severity: LOW
+    file: .claude/knowledge-base/plans/m7-env-secrets-plan.md
+    plan_ref: Global DoD line ("grep -rn 'process.env' src/core/ vazio")
+    summary: "Plan's DoD assertion that `grep -rn 'process.env' src/core/` is empty is mis-specified — pre-existing dir-config helpers (HODOR_RUNS_DIR, HODOR_VERDICTS_DIR, HODOR_DRAFTS_DIR, HODOR_REVIEWS_DIR, HODOR_RUN_HISTORY_LIMIT from M0-M5) match it. The actual invariant (core never reads SECRETS from env) holds."
+    evidence: "grep -rn 'process.env' src/core/ returns 6 lines (runScenario.ts comment + 5 pre-existing config-dir reads). None read secrets. The intended DIP invariant is satisfied; only the plan's literal grep is wrong."
+    recommended_action: "No code change. Optionally tighten the plan/DoD grep to target secret reads only (e.g., exclude the dir-config helpers) so future audits aren't tripped."
+
+scope_creep:
+  - file: src/mcp/secrets.ts
+    severity: INFO
+    note: "Created as a new module though plan listed only server.ts + secrets.test.ts. Better SRP; resolveHodorSecrets is pure and isolated. No behavior outside plan scope. Accepted."
+
+backward_compat:
+  m0_m6_regression: PASS  # 238/238 committed tests green excluding probes; secrets? optional preserves all pre-M7 callers; interpolate unchanged
+
+blockers:
+  - F-xval-1   # statusText leak into runs/ + committable reviews/ (DoD#2 violation)
+  - F-xval-5   # working tree RED + unstable (failing tests + tsc errors + untracked files)
+highs:
+  - F-xval-2   # envelope.name not scrubbed
+  - F-xval-3   # JSON-escaped secret reconstructs

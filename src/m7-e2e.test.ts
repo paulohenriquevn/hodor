@@ -104,3 +104,19 @@ describe("E2E M7 — cenário autenticado via env, segredo nunca persistido", ()
     await client.close();
   });
 });
+
+describe("E2E M7 — error path não vaza segredo (WIRE-1)", () => {
+  it("e2e_m7_network_error_message_redacts_secret_in_url", async () => {
+    process.env.HODOR_SECRET_QKEY = "a/b+c=d-secret";
+    // alvo INEXISTENTE (porta morta) + segredo na QUERY → erro com url encodada
+    const sc: Scenario = { schemaVersion: 1, name: "dead", steps: [{ name: "g", request: { method: "GET", url: `http://127.0.0.1:1/x?q=${"${{ env.QKEY }}"}` } }] };
+    const client = await connected();
+    const res = (await client.callTool({ name: "run_scenario", arguments: sc })) as { isError?: boolean; content?: { text: string }[] };
+    expect(res.isError).toBe(true);
+    const text = JSON.stringify(res);
+    expect(text).not.toContain("a/b+c=d-secret"); // forma crua
+    expect(text).not.toContain(encodeURIComponent("a/b+c=d-secret")); // forma encodada (a%2Fb...)
+    await client.close();
+    delete process.env.HODOR_SECRET_QKEY;
+  });
+});

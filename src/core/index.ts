@@ -71,7 +71,7 @@ export { checkScenario, type CheckResult, type CheckStatus, type CheckScenarioOp
 export { replaySuite, type SuiteReport, type SuiteItemResult, type SuiteStatus } from "./replaySuite.js";
 
 // M7 — injeção de env/secrets
-export { redactSecretValues } from "./redactSecrets.js";
+export { redactSecretValues, scrubSecretsFromText } from "./redactSecrets.js";
 
 // M3 — persistência versionável
 export { stableStringify } from "./stableStringify.js";

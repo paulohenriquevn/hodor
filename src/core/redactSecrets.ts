@@ -1,26 +1,40 @@
 import type { RunEnvelope } from "./runSchema.js";
 
 /**
- * Redação por VALOR de segredos (M7, ADR D3). Substitui cada valor-segredo (e a
- * sua forma `encodeURIComponent` — EC-1: o `interpolateRequest` encoda o valor na
- * URL, então o segredo é persistido encodado) por `<redacted>` em url/headers/body
- * de cada request e na response (body/headers) + captures. COMPLEMENTA a redação
- * por NOME de header do M3 (pega segredo em header não-sensível / body / url).
- * Longest-first (algoritmo do keploy) evita redação parcial quando um segredo é
- * substring de outro. Usa split/join (não regex) — imune a metacaracteres no valor.
- * NUNCA muta o input.
+ * Redação por VALOR de segredos (M7, ADR D3). Substitui cada valor-segredo (e suas
+ * formas codificadas — o segredo é persistido em variantes diferentes conforme o
+ * sink) por `<redacted>` em TODO campo string do run. COMPLEMENTA a redação por
+ * NOME de header do M3 (pega segredo em header não-sensível / body / url / statusText).
+ *
+ * Variantes cobertas por valor (review M7): cru; `encodeURIComponent` (url via
+ * `interpolateRequest`); `encodeURI` (defensivo); JSON-escaped (`JSON.stringify`
+ * inner — segredo com aspas/barras no body JSON). Longest-first (algoritmo do
+ * keploy) evita redação parcial. Usa split/join (imune a metacaracteres). NUNCA muta.
  */
 const REDACTED = "<redacted>";
 
-export function redactSecretValues(env: RunEnvelope, values: string[]): RunEnvelope {
-  // variantes: valor cru + encodeURIComponent; sem vazios; dedupe; longest-first.
+/** Constrói as variantes ordenadas (longest-first, sem vazios) de uma lista de valores. */
+function secretVariants(values: string[]): string[] {
   const variants = new Set<string>();
   for (const v of values) {
     if (!v) continue;
     variants.add(v);
     variants.add(encodeURIComponent(v));
+    variants.add(encodeURI(v));
+    variants.add(JSON.stringify(v).slice(1, -1)); // forma JSON-escaped (sem as aspas externas)
   }
-  const ordered = [...variants].sort((a, b) => b.length - a.length);
+  return [...variants].filter(Boolean).sort((a, b) => b.length - a.length);
+}
+
+/** Redige cada variante de segredo de uma string plana (ex.: mensagem de erro — WIRE-1). */
+export function scrubSecretsFromText(text: string, values: string[]): string {
+  let out = text;
+  for (const variant of secretVariants(values)) out = out.split(variant).join(REDACTED);
+  return out;
+}
+
+export function redactSecretValues(env: RunEnvelope, values: string[]): RunEnvelope {
+  const ordered = secretVariants(values);
   if (ordered.length === 0) return env;
 
   const scrub = (s: string): string => {
@@ -41,6 +55,8 @@ export function redactSecretValues(env: RunEnvelope, values: string[]): RunEnvel
 
   return {
     ...env,
+    // F-xval-2: o nome do cenário (autorado) também é redigido por completude.
+    ...(env.name !== undefined ? { name: scrub(env.name) } : {}),
     steps: env.steps.map((step) => ({
       ...step,
       request: {
@@ -51,6 +67,8 @@ export function redactSecretValues(env: RunEnvelope, values: string[]): RunEnvel
       },
       response: {
         ...step.response,
+        // F-xval-1: statusText (reason phrase) é persistido E vai p/ o review — redige.
+        statusText: scrub(step.response.statusText),
         headers: scrubHeaders(step.response.headers),
         body: scrub(step.response.body),
       },

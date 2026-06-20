@@ -86,3 +86,16 @@ describe("mcp run_scenario — M7 não persiste segredo (T2.1)", () => {
     await client.close();
   });
 });
+
+describe("resolveHodorSecrets — drop diagnóstico (API-DOM-1)", () => {
+  it("resolve_hodor_secrets_logs_dropped_short_secret", () => {
+    const logs: string[] = [];
+    const orig = console.error;
+    console.error = (m?: unknown) => { logs.push(String(m)); };
+    try {
+      resolveHodorSecrets({ HODOR_SECRET_T: "ab" }); // curto → drop logado
+    } finally { console.error = orig; }
+    expect(logs.some((l) => l.includes("secret_dropped") && l.includes('"name":"T"') && l.includes("too_short"))).toBe(true);
+    expect(logs.join()).not.toContain("ab"); // valor NUNCA logado
+  });
+});

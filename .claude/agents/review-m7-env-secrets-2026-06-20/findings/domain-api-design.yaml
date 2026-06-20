@@ -1,0 +1,280 @@
+---
+review: m7-env-secrets
+domain: api-design
+focus: agent/operator ergonomics for env/secrets injection
+date: 2026-06-20
+reviewer: domain-api-design-reviewer
+files_reviewed:
+  - src/core/runScenario.ts
+  - src/mcp/secrets.ts
+  - src/mcp/server.ts
+  - src/core/interpolate.ts
+  - src/core/redactSecrets.ts
+  - src/core/errors.ts
+  - src/core/checkScenario.ts
+  - src/core/replaySuite.ts
+context_access_note: >
+  Plan and blueprint under .claude/knowledge-base/ were permission-denied (read-locked),
+  as was src/mcp/secrets.ts / src/core/redactSecrets.ts via the direct Read/Bash tools.
+  Their verbatim content was retrieved via the Explore sub-agent and reviewed line-by-line.
+  Findings rely on the source, CHANGELOG.md, ROADMAP.md, and the test suite as the
+  authoritative behavioral spec.
+
+summary:
+  blocker_count: 0
+  high_count: 1
+  medium_count: 3
+  low_count: 3
+  info_count: 1
+  verdict_contribution: NEEDS_FIXES
+  one_line: >
+    The security model (prefix allowlist + value redaction) is sound and well-tested, but the
+    OPERATOR-FACING ergonomics have real gaps: silent secret-drop on short/missing values surfaces
+    only as a generic "undefined variable" error, the HODOR_SECRET_ convention is undocumented in
+    README, and the env. error message does not guide the operator to the fix.
+
+findings:
+  - id: API-DOM-1
+    severity: HIGH
+    title: "Silent secret drop (short/empty/no-suffix) is indistinguishable from a typo — operator gets a misleading 'undefined variable' error"
+    category: discoverability
+    files:
+      - src/mcp/secrets.ts:20
+      - src/core/interpolate.ts:13-15
+      - src/core/runScenario.ts:31
+    evidence: |
+      resolveHodorSecrets() silently `continue`s on three distinct conditions:
+        - src/mcp/secrets.ts:19  -> name === ""        (HODOR_SECRET_ with no suffix)
+        - src/mcp/secrets.ts:20  -> value undefined     (EC-5, empty)
+        - src/mcp/secrets.ts:20  -> value.length < 4    (EC-4, too short)
+      When any of these fires, the secret is NEVER seeded into `variables` as `env.NAME`
+      (runScenario.ts:31). The scenario then references `${{ env.NAME }}`, and interpolate()
+      throws the SAME generic error it throws for a genuine typo:
+        interpolate.ts:14 -> `undefined variable in template: env.NAME`
+      The operator who correctly exported `HODOR_SECRET_TOKEN=abc` (3 chars) is told
+      "undefined variable in template: env.TOKEN". Nothing tells them the real cause:
+      "your secret was dropped because it is shorter than MIN_SECRET_LEN (4)". This is the
+      classic silent-failure anti-pattern (CLAUDE.md §8: fail-LOUD, fail-CLEAR). The cause
+      (length policy) and the symptom (undefined var) are three layers apart.
+    why_it_matters: >
+      MIN_SECRET_LEN is an internal, undocumented policy. A real-world short token (PINs,
+      4-char-1-off, test fixtures, a truncated paste) drops silently and the operator burns
+      time chasing a "typo" that does not exist. The blueprint/plan justify MIN_SECRET_LEN on
+      over-redaction grounds (valid), but the ergonomic cost — opacity at the point of failure
+      — was not addressed.
+    recommendation: |
+      Make the drop observable WITHOUT leaking the value:
+        1. In resolveHodorSecrets, emit a stderr diagnostic (same channel as the other
+           console.error events in server.ts) when a HODOR_SECRET_-prefixed key is dropped,
+           e.g. {event:"secret_dropped", name:"TOKEN", reason:"too_short|empty"} — name only,
+           NEVER the value. This is the single highest-ROI ergonomic fix.
+        2. OPTIONAL: enrich the interpolate error for the env.* namespace specifically, e.g.
+           "undefined variable in template: env.TOKEN (no HODOR_SECRET_TOKEN exported, or its
+           value is empty/shorter than 4 chars)". Caveat: interpolate.ts is M1 core reused
+           unchanged by design — changing its message couples core to the M7 secret policy.
+           Prefer option 1 (adapter-level diagnostic) to keep the DIP boundary clean.
+    confidence: HIGH
+
+  - id: API-DOM-2
+    severity: MEDIUM
+    title: "HODOR_SECRET_ → env. convention is undocumented in README; only CHANGELOG/ROADMAP mention it"
+    category: discoverability
+    files:
+      - src/mcp/secrets.ts:1-13
+    evidence: |
+      The contract "to use ${{ env.TOKEN }} you must export HODOR_SECRET_TOKEN" appears only in:
+        - CHANGELOG.md:10  (Added/M7)
+        - CHANGELOG.md:21  (Security/M7)
+        - ROADMAP.md:236   (milestone DoD)
+      README.md has ZERO hits for "HODOR_SECRET" or "env." (confirmed by repo-wide grep).
+      An operator/agent reading the README has no way to learn the convention. CHANGELOG is a
+      change log, not a usage reference; ROADMAP is intent, not how-to. The feature is
+      effectively undiscoverable from the front door.
+    why_it_matters: >
+      Per public-copy.md the README HERO is outcome-shaped — fine — but a "Secrets / auth" usage
+      section in the README body (or docs/) is the canonical place an operator looks. Without it,
+      the only way to discover the prefix rule is to read source or guess.
+    recommendation: |
+      Add a short "Authenticated scenarios / secrets" section to README (or docs/) documenting:
+        - the HODOR_SECRET_<NAME> → ${{ env.<NAME> }} mapping (prefix stripped),
+        - that process.env is NOT exposed wholesale (only the prefix is injectable),
+        - the MIN_SECRET_LEN=4 floor (see API-DOM-1),
+        - that secret VALUES are redacted from persisted runs and from structuredContent.
+      This is CHANGELOG-mandated documentation (Unbreakable Rule 6) extended to user-facing docs.
+    confidence: HIGH
+
+  - id: API-DOM-3
+    severity: MEDIUM
+    title: "`env.` namespace conceptually overloads 'environment variable' — operator must rename existing env vars (API_TOKEN → HODOR_SECRET_API_TOKEN), friction undocumented"
+    category: naming-convention
+    files:
+      - src/mcp/secrets.ts:10
+      - src/core/runScenario.ts:31
+    evidence: |
+      The exposed namespace is `env.` (runScenario.ts:31 seeds variables[`env.${k}`]). But the
+      values it surfaces are NOT general environment variables — they are a security-allowlisted
+      SUBSET (only HODOR_SECRET_*). So `${{ env.PATH }}` deliberately does NOT resolve PATH
+      (secrets.test.ts:53-55 asserts this is an error). The token `env.` therefore lies slightly:
+      it reads like "any env var" but means "the HODOR_SECRET_ allowlist with the prefix stripped".
+      An operator who already has `API_TOKEN` in their environment must CREATE a NEW, renamed
+      variable `HODOR_SECRET_API_TOKEN` — they cannot reuse the existing one. That rename friction
+      is real and is documented nowhere for the operator (only implied by the prefix rule).
+    why_it_matters: >
+      Two ergonomic costs: (1) the `env.` name invites the wrong mental model ("I have FOO in my
+      env, so ${{ env.FOO }} should work") which fails confusingly; (2) the forced rename of
+      pre-existing secrets is undocumented friction. A `secret.` namespace would have signaled the
+      allowlist semantics more honestly. This is a deliberate ADR choice (reuse M1 interpolate
+      namespace) so I am NOT calling it a defect — but the naming gap should be acknowledged and
+      mitigated by docs, since renaming/refactoring the namespace post-M7 is a breaking change.
+    recommendation: |
+      KISS/YAGNI: do NOT rename the namespace now (it is shipped, tested, and a rename is a
+      breaking change for any existing scenario). Instead, neutralize the friction with docs
+      (folds into API-DOM-2): explicitly state "Hodor does not read your existing env vars;
+      export a HODOR_SECRET_<NAME> copy. ${{ env.<NAME> }} resolves ONLY that allowlist, not
+      arbitrary environment variables." If a future milestone revisits the namespace, capture
+      the env-vs-secret naming tension in an ADR before committing.
+    confidence: MEDIUM
+
+  - id: API-DOM-4
+    severity: MEDIUM
+    title: "Nested-dot placeholder `${{ env.X.Y }}` is accepted by the regex but silently un-resolvable — no nested lookup, falls into generic undefined error"
+    category: contract-clarity
+    files:
+      - src/core/interpolate.ts:9
+      - src/core/runScenario.ts:31
+    evidence: |
+      PLACEHOLDER_RE = /\$\{\{\s*([\w.]+)\s*\}\}/g  (interpolate.ts:9) — `[\w.]+` greedily
+      captures dots, so `${{ env.X.Y }}` matches with name = "env.X.Y". Lookup is a FLAT key
+      check: `name in variables` (interpolate.ts:13). Secrets are seeded as flat literal keys
+      `env.X` (runScenario.ts:31) — there is NO nested/path resolution. So:
+        - `${{ env.TOKEN }}`   -> key "env.TOKEN" exists -> resolves. OK.
+        - `${{ env.X.Y }}`     -> key "env.X.Y" does not exist -> ScenarioError "undefined
+                                  variable in template: env.X.Y".
+      Functionally safe (no crash, no leak), but the dot in `env.X` is a NAMING convention, not a
+      path operator, and the regex accepting arbitrary nested dots invites the operator to write
+      `${{ env.db.password }}` expecting structure that does not exist.
+    why_it_matters: >
+      The single dot in `env.NAME` reads like a path accessor (it is literally how object access
+      looks), so an operator naturally tries `env.a.b`. They get the same opaque "undefined
+      variable" error as a typo (compounds API-DOM-1). The contract "env. is a flat prefix, not a
+      path" is implicit.
+    recommendation: |
+      Document (in the README secrets section) that `env.<NAME>` is a flat name, not a nested
+      path — `HODOR_SECRET_<NAME>` maps 1:1 and NAME is opaque. No code change required; this is
+      a contract-clarity doc item. (Tightening the regex to reject nested dots would be a
+      behavior change to M1 core — out of scope and not worth the coupling; KISS.)
+    confidence: HIGH
+
+  - id: API-DOM-5
+    severity: LOW
+    title: "Capture/secret precedence: namespaces don't collide (good), but a capture literally named `env.X` would silently shadow a secret"
+    category: contract-clarity
+    files:
+      - src/core/runScenario.ts:31
+      - src/core/runScenario.ts:45
+    evidence: |
+      Secrets are seeded FIRST under the `env.` namespace (runScenario.ts:31); per-step captures
+      are merged AFTER with last-write-wins: `variables = { ...variables, ...captures }`
+      (runScenario.ts:45). Capture names are bare (e.g. `token`) while secrets are `env.TOKEN`, so
+      the normal case CANNOT collide — `${{ token }}` and `${{ env.TOKEN }}` are different keys.
+      This namespace separation is a genuine STRENGTH and resolves Q4's "do they collide?" cleanly:
+      they do not, by construction.
+      EDGE: capture NAMES are author-controlled scenario keys. A scenario that defines a capture
+      literally named "env.TOKEN" would, after step 1, OVERWRITE the seeded secret (captures win,
+      merged last) — a captured response value would shadow the injected secret with no warning.
+    why_it_matters: >
+      Extremely unlikely in practice (who names a capture "env.TOKEN"?), and it is author-error,
+      not operator-facing. But the precedence (captures > secrets) is undocumented and the
+      override is silent.
+    recommendation: |
+      Low priority. Optionally guard at the boundary: reject capture names that start with `env.`
+      (they are reserved for the secret namespace) — a one-line validation in the scenario schema
+      or evalCapture path, failing fast per Rule 8. Otherwise just document that `env.*` is a
+      reserved capture-name prefix. Do not over-engineer (YAGNI) — a doc note is sufficient.
+    confidence: MEDIUM
+
+  - id: API-DOM-6
+    severity: LOW
+    title: "ScenarioError carries no structured field — operator/agent cannot programmatically distinguish 'undefined secret' from 'undefined capture'"
+    category: error-ergonomics
+    files:
+      - src/core/errors.ts
+      - src/core/interpolate.ts:14
+    evidence: |
+      ScenarioError (errors.ts) is message-only (extends Error with optional cause; no `code`,
+      no `variableName`, no `kind` field). interpolate.ts:14 throws a single string
+      `undefined variable in template: ${name}`. An MCP client/agent receiving the tool error
+      must STRING-PARSE the message to know which variable failed and whether it was an `env.*`
+      (secret) miss or a capture miss. The two failure modes (export a secret vs fix a capture
+      step) have completely different remediations.
+    why_it_matters: >
+      Agents act on structured signals far more reliably than on prose. A typed field
+      (kind: "undefined_secret" | "undefined_capture", name: "TOKEN") would let the agent
+      self-correct ("I should tell the operator to export HODOR_SECRET_TOKEN") instead of
+      surfacing an opaque string. This is the agent-UX dimension of API-DOM-1.
+    recommendation: |
+      Optional enhancement: add a `code`/`kind` + `variableName` to ScenarioError and populate it
+      in interpolate (distinguishing `env.`-prefixed misses). Weigh against the M1-core-reuse
+      constraint — interpolate is shared. Could be done adapter-side instead by catching and
+      re-shaping the error in server.ts. Not blocking; informs the agent-ergonomics direction.
+    confidence: MEDIUM
+
+  - id: API-DOM-7
+    severity: LOW
+    title: "Redaction is value-based and unconditional — a too-short secret that was dropped is NOT redacted, so if it somehow appears in output it would leak"
+    category: security-ergonomics-interaction
+    files:
+      - src/mcp/secrets.ts:20
+      - src/mcp/server.ts:121-125
+      - src/core/redactSecrets.ts:15-23
+    evidence: |
+      redactSecretValues redacts `Object.values(secrets)` (server.ts:125). `secrets` is the
+      output of resolveHodorSecrets, which DROPS short/empty values (secrets.ts:20). Therefore a
+      secret shorter than MIN_SECRET_LEN is BOTH not injectable AND not in the redaction set.
+      This is internally consistent (a dropped secret is never seeded, so it never reaches a run),
+      so there is no actual leak today. But the coupling is implicit: the redaction set and the
+      injection set are the SAME object, and both silently exclude short values. If a future change
+      ever injected a short value without redacting it (or vice versa), the symmetry would break
+      silently. The MIN_SECRET_LEN justification (over-redaction) is itself a redaction-correctness
+      concern, not an injection concern — conflating the two thresholds in one constant is a latent
+      coupling.
+    why_it_matters: >
+      Not exploitable now; flagged for design clarity. The "do not inject short" and "do not
+      redact short" decisions share one constant for two different reasons (injection ergonomics
+      vs redaction over-zealousness). A reviewer should know they are intentionally coupled.
+    recommendation: >
+      No code change required. Add a one-line comment at the redaction call site (or in the
+      blueprint/ADR) making explicit that the redaction set MUST remain == the injection set, so
+      the symmetry is a documented invariant rather than an accident. Confidence MEDIUM that this
+      is purely defensive (no current leak).
+    confidence: MEDIUM
+
+  - id: API-DOM-8
+    severity: INFO
+    title: "Positive: namespace allowlist + longest-first value redaction + adapter-only process.env read is a clean, well-tested security/ergonomics baseline"
+    category: positive
+    files:
+      - src/mcp/secrets.ts:10-23
+      - src/core/redactSecrets.ts
+      - src/mcp/server.ts:121-125
+      - src/mcp/secrets.test.ts
+    evidence: |
+      Strengths worth recording (reviews that only list problems are incomplete):
+        - process.env is read ONLY in the adapter (server.ts:121); core stays pure (DIP/D1).
+          runScenario receives `secrets` as an injected dep — testable, no global read.
+        - Allowlist-by-construction (prefix) is the right default-deny posture: a malicious
+          scenario CANNOT exfiltrate arbitrary env via ${{ env.AWS_SECRET }} (asserted by
+          secrets.test.ts:53-55 / mcp_does_not_expose_non_prefixed_env).
+        - Redaction is value-based, longest-first, split/join (metachar-safe), covers raw +
+          encodeURIComponent variants (redactSecrets.ts:16-23) — handles the URL-encoded sink.
+        - The redaction choke point sits BEFORE persistRun AND structuredContent (server.ts:123-125,
+          checkScenario, replaySuite) — secret never hits disk nor returns to the agent. Tests
+          run_scenario_tool_does_not_persist_secret + _structured_content_redacted prove it.
+      The security model is solid; the findings above are about OPERATOR/AGENT ergonomics around
+      that solid core, not about the core being wrong.
+    confidence: HIGH
+
+cross_cutting_recommendation: >
+  The single most valuable fix is a README "secrets" section (API-DOM-2/3/4 all fold into it)
+  plus an adapter-level stderr diagnostic on secret-drop (API-DOM-1). Together they close the
+  discoverability gap without touching the M1 interpolate core or the proven redaction path.
