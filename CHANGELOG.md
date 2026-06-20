@@ -7,6 +7,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ## [Unreleased]
 
 ### Added
+- **M7 — Injeção de env/secrets no run time (remove o teto de auth do M6):** cenários passam a testar APIs **autenticadas** — um header `Authorization: Bearer ${{ env.TOKEN }}` resolve o segredo no run time a partir de variáveis de ambiente, e executa contra a API real. Só env vars com o prefixo **`HODOR_SECRET_*`** são injetáveis (allowlist por construção, prefixo removido na exposição: `HODOR_SECRET_TOKEN` → `${{ env.TOKEN }}`) — `process.env` NUNCA é exposto inteiro. Segredo de env ausente → erro explícito (fail-fast). Reusa a interpolação `${{ }}` do M1 (sem mudança) e `process.env` (stdlib). ZERO dependência nova.
 
 ### Changed
 
@@ -17,6 +18,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ### Fixed
 
 ### Security
+- **M7 — Redação por VALOR de segredos em todos os sinks:** o segredo injetado (token resolvido) NUNCA é persistido. `redactSecretValues` substitui cada valor por `<redacted>` em url/headers/body/captures + response de TODO run, no **choke point** antes de qualquer `persistRun` e no `structuredContent` retornado ao agente — cobrindo o gap da redação por-nome do M3 (segredo em header não-sensível/body/url). Cobre TAMBÉM a forma `encodeURIComponent` do valor (o segredo é persistido encodado na URL — sem isso vazaria encodado). Longest-first (algoritmo do keploy) evita redação parcial. Segredos < 4 chars não são injetáveis (evita over-redaction). Mitiga o vetor SSRF+secrets: cenário não pode exfiltrar env var arbitrário (só `HODOR_SECRET_*` é injetável).
 
 ## [0.6.0] - 2026-06-19
 
