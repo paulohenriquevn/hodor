@@ -4,6 +4,7 @@ import type { RunDiff } from "./diffRuns.js";
 import { runScenario, type RunScenarioDeps } from "./runScenario.js";
 import { scenarioKey, findGoldenRun } from "./runHistory.js";
 import { diffRuns } from "./diffRuns.js";
+import { redactSecretValues } from "./redactSecrets.js";
 import { defaultRunsDir } from "./runStore.js";
 import { defaultVerdictsDir } from "./verdict.js";
 
@@ -38,7 +39,11 @@ export async function checkScenario(scenario: Scenario, options: CheckScenarioOp
   const runsDir = options.runsDir ?? defaultRunsDir();
   const verdictsDir = options.verdictsDir ?? defaultVerdictsDir();
   // Re-executa o cenário contra o serviço atual (specs frescos na fronteira — D2).
-  const run = await runScenario(scenario, options.deps);
+  const executed = await runScenario(scenario, options.deps);
+  // M7 (T1.3): redige os valores de segredo ANTES do diff e do retorno — senão o
+  // golden (já redigido) vs run com token real daria falso diff em header não-sensível,
+  // e o run retornado/persistido vazaria o segredo.
+  const run = redactSecretValues(executed, Object.values(options.deps?.secrets ?? {}));
   // Golden é buscado entre os runs JÁ existentes — o run novo (sem verdict) nunca
   // é seu próprio baseline (EC-3); o core não persiste.
   const golden = await findGoldenRun(scenarioKey(run), runsDir, verdictsDir);

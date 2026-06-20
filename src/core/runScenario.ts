@@ -9,6 +9,9 @@ import type { RunEnvelope, RunStep } from "./runSchema.js";
 export interface RunScenarioDeps extends EnvelopeDeps {
   /** Timeout por step (repassado ao executeRequest do M0). */
   timeoutMs?: number;
+  /** M7 (ADR D4): segredos injetáveis, expostos ao cenário como `${{ env.NOME }}`.
+   * Resolvidos no ADAPTADOR (o core nunca lê process.env — DIP/D1). */
+  secrets?: Record<string, string>;
 }
 
 /**
@@ -22,7 +25,10 @@ export async function runScenario(
   scenario: Scenario,
   deps: RunScenarioDeps = {},
 ): Promise<RunEnvelope> {
+  // M7 (D4): semeia os segredos sob o namespace `env.*` ANTES do step 1, para que
+  // `${{ env.NOME }}` resolva via o mesmo `interpolate` do M1 (reusado sem mudança).
   let variables: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(deps.secrets ?? {})) variables[`env.${k}`] = v;
   const steps: RunStep[] = [];
 
   for (const step of scenario.steps) {
