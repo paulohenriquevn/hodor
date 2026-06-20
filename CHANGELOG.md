@@ -7,7 +7,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ## [Unreleased]
 
 ### Added
-- **M7 — Injeção de env/secrets no run time (remove o teto de auth do M6):** cenários passam a testar APIs **autenticadas** — um header `Authorization: Bearer ${{ env.TOKEN }}` resolve o segredo no run time a partir de variáveis de ambiente, e executa contra a API real. Só env vars com o prefixo **`HODOR_SECRET_*`** são injetáveis (allowlist por construção, prefixo removido na exposição: `HODOR_SECRET_TOKEN` → `${{ env.TOKEN }}`) — `process.env` NUNCA é exposto inteiro. Segredo de env ausente → erro explícito (fail-fast). Reusa a interpolação `${{ }}` do M1 (sem mudança) e `process.env` (stdlib). ZERO dependência nova.
 
 ### Changed
 
@@ -16,6 +15,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 ### Removed
 
 ### Fixed
+
+### Security
+
+## [0.7.0] - 2026-06-20
+
+### Added
+- **M7 — Injeção de env/secrets no run time (remove o teto de auth do M6):** cenários passam a testar APIs **autenticadas** — um header `Authorization: Bearer ${{ env.TOKEN }}` resolve o segredo no run time a partir de variáveis de ambiente, e executa contra a API real. Só env vars com o prefixo **`HODOR_SECRET_*`** são injetáveis (allowlist por construção, prefixo removido na exposição: `HODOR_SECRET_TOKEN` → `${{ env.TOKEN }}`) — `process.env` NUNCA é exposto inteiro. Segredo de env ausente → erro explícito (fail-fast). Reusa a interpolação `${{ }}` do M1 (sem mudança) e `process.env` (stdlib). ZERO dependência nova.
+
 
 ### Security
 - **M7 (review) — Redação fechada em TODOS os sinks (achados do review adversarial):** além de url/headers/body/captures, `redactSecretValues` agora redige `response.statusText` (reason phrase — persistido + commitável no review) e o `name` do cenário; cobre as variantes `encodeURI` e **JSON-escaped** do valor (segredo com aspas/barras no body); e o **error path** é redigido (`scrubSecretsFromText`) — um alvo caído não vaza mais o segredo (encodado na URL) na mensagem de erro ao agente/stderr. Drop de secret inválido (curto/vazio/sem-sufixo) é diagnosticado em stderr por NOME (`secret_dropped`), nunca pelo valor.
