@@ -121,6 +121,68 @@ describe("API REST (M8) — runs/diff/verdict", () => {
     expect(body.mode).toBe("golden");
     expect(body.diff).toBeNull();
   });
+
+  it("api_diff_vs_previous_default_mode", async () => {
+    await persistRun(buildRunEnvelope([step], { now: () => 0, newId: () => UUID1 }, "a"), runsDir);
+    const base = await start();
+    const body = (await (await fetch(`${base}/api/runs/${UUID1}/diff`)).json()) as { mode: string };
+    expect(body.mode).toBe("previous"); // ausência de vs → default previous
+  });
+
+  it("api_diff_bad_vs_400", async () => {
+    await persistRun(buildRunEnvelope([step], { now: () => 0, newId: () => UUID1 }, "a"), runsDir);
+    const base = await start();
+    const res = await fetch(`${base}/api/runs/${UUID1}/diff?vs=bananas`); // valor inválido
+    expect(res.status).toBe(400); // não coage silenciosamente para previous
+  });
+
+  it("api_post_verdict_malformed_json_400", async () => {
+    await persistRun(buildRunEnvelope([step], { now: () => 0, newId: () => UUID1 }, "a"), runsDir);
+    const base = await start();
+    const res = await fetch(`${base}/api/runs/${UUID1}/verdict`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not json",
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("json");
+  });
+
+  it("api_post_verdict_invalid_400_has_context", async () => {
+    await persistRun(buildRunEnvelope([step], { now: () => 0, newId: () => UUID1 }, "a"), runsDir);
+    const base = await start();
+    const res = await fetch(`${base}/api/runs/${UUID1}/verdict`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ verdict: "maybe" }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/invalid verdict/); // erro com contexto
+  });
+
+  it("api_body_too_large_413", async () => {
+    await persistRun(buildRunEnvelope([step], { now: () => 0, newId: () => UUID1 }, "a"), runsDir);
+    const base = await start();
+    const res = await fetch(`${base}/api/runs/${UUID1}/verdict`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "x".repeat(1024 * 1024 + 10), // > 1 MB
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it("api_request_emits_structured_metric", async () => {
+    const logs: string[] = [];
+    const orig = console.error;
+    console.error = (m?: unknown) => { logs.push(String(m)); };
+    try {
+      const base = await start();
+      await fetch(`${base}/api/runs`);
+    } finally {
+      console.error = orig;
+    }
+    expect(logs.some((l) => l.includes("api_request") && l.includes('"path":"/api/runs"') && l.includes('"status":200'))).toBe(true);
+  });
 });
 
 describe("API REST (M8) — drafts/reviews", () => {

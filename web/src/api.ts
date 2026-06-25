@@ -21,9 +21,19 @@ export function setApiBase(b: string): void {
   base = b.replace(/\/$/, "");
 }
 
+/** Extrai a mensagem `{error}` do servidor (envelope uniforme) p/ surfaçar contexto. */
+async function errorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: string };
+    return body.error ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${base}${path}`);
-  if (!res.ok) throw new ApiError(res.status, `GET ${path} → ${res.status}`);
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res, `GET ${path} → ${res.status}`));
   return (await res.json()) as T;
 }
 
@@ -56,6 +66,6 @@ export async function postVerdict(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new ApiError(res.status, `POST verdict → ${res.status}`);
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res, `POST verdict → ${res.status}`));
   return (await res.json()) as ReviewArtifact;
 }

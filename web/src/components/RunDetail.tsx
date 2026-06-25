@@ -25,6 +25,24 @@ function AssertList({ step }: { step: RunStep }) {
   );
 }
 
+// Paridade com o SSR (render.ts capturesList): variáveis capturadas do step (M1).
+function CapturesList({ step }: { step: RunStep }) {
+  const entries = Object.entries(step.captures ?? {});
+  if (entries.length === 0) return null;
+  return (
+    <div className="mt-3">
+      <h4 className="text-xs font-semibold mb-1">Captures</h4>
+      <ul className="flex flex-col gap-1">
+        {entries.map(([k, v]) => (
+          <li key={k} className="text-xs font-mono">
+            <code>{k}</code> = {String(v)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function StepCard({ step, index }: { step: RunStep; index: number }) {
   const res = step.response;
   return (
@@ -47,12 +65,29 @@ function StepCard({ step, index }: { step: RunStep; index: number }) {
             <Badge variant={statusVariant(res.status)} aria-label={`status ${res.status}`}>
               {res.status} {res.statusText}
             </Badge>
+            <span className="text-xs text-muted-foreground">{res.timings.durationMs.toFixed(1)} ms</span>
           </div>
           <ResponseView body={res.body} headers={res.headers} idPrefix={`res-${index}`} />
         </section>
         <AssertList step={step} />
+        <CapturesList step={step} />
       </CardContent>
     </Card>
+  );
+}
+
+// Paridade com o SSR (render.ts provenanceBadge): origem agente + pendência.
+function ProvenanceBadge({ run, verdict }: { run: RunEnvelope; verdict: Verdict | null }) {
+  const prov = run.provenance;
+  if (!prov || prov.origin !== "agent-generated") return null;
+  return (
+    <p className="text-sm">
+      🤖 gerado pelo agente{!verdict && <strong> · pendente de revisão</strong>}{" "}
+      <span className="text-muted-foreground">
+        ({prov.sourceKind}
+        {prov.sourceRef ? `: ${prov.sourceRef}` : ""})
+      </span>
+    </p>
   );
 }
 
@@ -68,6 +103,7 @@ export function RunDetail({ run, verdict }: { run: RunEnvelope; verdict: Verdict
           <Badge variant="warning">pendente</Badge>
         )}
       </div>
+      <ProvenanceBadge run={run} verdict={verdict} />
       {run.steps.map((step, i) => (
         <StepCard key={i} step={step} index={i} />
       ))}

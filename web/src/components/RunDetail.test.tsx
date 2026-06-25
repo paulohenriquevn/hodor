@@ -46,4 +46,24 @@ describe("RunDetail (M8 — paridade do detalhe)", () => {
     render(<RunDetail run={run} verdict={null} />);
     expect(screen.getByText(/atual: 500/)).toBeInTheDocument();
   });
+
+  it("run_detail_status_color_by_class", () => {
+    const ok = makeRun();
+    const { rerender } = render(<RunDetail run={ok} verdict={null} />);
+    expect(screen.getByLabelText("status 200").className).toMatch(/green/); // 2xx → verde
+    const err = makeRun({ status: 500, statusText: "Internal Server Error" });
+    rerender(<RunDetail run={err} verdict={null} />);
+    expect(screen.getByLabelText("status 500").className).toMatch(/red/); // 5xx → vermelho
+  });
+
+  it("run_detail_renders_timing_captures_provenance", () => {
+    const run = makeRun();
+    run.steps[0]!.captures = { userId: 42 };
+    run.provenance = { origin: "agent-generated", sourceKind: "endpoint", generatedAt: "2026-06-20T00:00:00.000Z" };
+    render(<RunDetail run={run} verdict={null} />);
+    expect(screen.getByText(/ms/)).toBeInTheDocument(); // timing (paridade SSR)
+    expect(screen.getByText("Captures")).toBeInTheDocument(); // captures (M1)
+    expect(screen.getByText("userId")).toBeInTheDocument();
+    expect(screen.getByText(/gerado pelo agente/)).toBeInTheDocument(); // provenance badge
+  });
 });

@@ -16,6 +16,7 @@ import {
   scenarioKey,
   diffRuns,
   buildListing,
+  RUN_ID_RE,
   type RunEnvelope,
   type Verdict,
 } from "../core/index.js";
@@ -28,8 +29,8 @@ import { renderRun, renderListing, renderDiff } from "./render.js";
  * load/saveVerdict) — fronteira mantida (web não decide regra de negócio).
  */
 
-// EC-1 (M0): id da URL é input do usuário — allowlist UUID antes de montar path (anti path-traversal).
-const RUN_ID_RE = /^[0-9a-f-]{36}$/i;
+// EC-1 (M0): id da URL é input do usuário — allowlist UUID (RUN_ID_RE, do core)
+// antes de montar path (anti path-traversal). M8: fonte única compartilhada com a API.
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MB — cap do body do POST de verdict.
 
 /** Body excedeu o limite → mapeado para 413 (F-dom-1), não 500. */

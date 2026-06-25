@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve, extname, sep } from "node:path";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import {
   loadRun,
   loadVerdict,
@@ -38,6 +38,11 @@ import {
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MB
 // Drafts usam ids mais largos que UUID (randomUUID OU id explícito path-safe).
 const DRAFT_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+// Validação de fronteira do body do POST verdict (CLAUDE.md §8 — falha clara com contexto).
+const VerdictInputSchema = z.object({
+  verdict: z.enum(["approved", "rejected"]),
+  note: z.string().optional(),
+});
 
 const STATIC_CT: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -85,7 +90,17 @@ export function buildApiServer(
     void route(req, { runsDir, verdictsDir, reviewsDir, draftsDir, distDir })
       .then((reply) => send(req, res, reply))
       .catch((e: unknown) => {
-        send(req, res, err(500, e instanceof Error ? e.message : "internal error"));
+        // Falha clara no SERVIDOR (stderr, com contexto); corpo genérico no fio
+        // (não vaza mensagem interna ao cliente).
+        console.error(
+          JSON.stringify({
+            event: "api_error",
+            method: req.method ?? "GET",
+            path: (req.url ?? "/").split("?")[0],
+            message: e instanceof Error ? e.message : "unknown",
+          }),
+        );
+        send(req, res, err(500, "internal error"));
       });
   });
 }
@@ -170,6 +185,8 @@ async function apiRoute(method: string, path: string, req: IncomingMessage, dirs
     if (!RUN_ID_RE.test(id)) return err(400, "bad id");
     if (method !== "GET") return err(405, "method not allowed", "GET");
     const vs = new URLSearchParams((req.url ?? "").split("?")[1] ?? "").get("vs");
+    // Fronteira: `vs` ausente → default "previous"; valor inválido → 400 (não coage silenciosamente).
+    if (vs !== null && vs !== "golden" && vs !== "previous") return err(400, "bad vs (use golden|previous)");
     try {
       const curr = await loadRun(join(runsDir, `${id}.json`));
       const baseline =
@@ -223,20 +240,26 @@ async function postVerdict(
     if (e instanceof PayloadTooLargeError) return err(413, "payload too large");
     throw e;
   }
-  let parsed: { verdict?: unknown; note?: unknown };
+  let rawParsed: unknown;
   try {
-    parsed = raw ? (JSON.parse(raw) as typeof parsed) : {};
+    rawParsed = raw ? JSON.parse(raw) : {};
   } catch {
     return err(400, "invalid json body");
   }
+  // Fronteira: valida o input com schema dedicado e erro CONTEXTUAL (CLAUDE.md §8).
+  const input = VerdictInputSchema.safeParse(rawParsed);
+  if (!input.success) {
+    const detail = input.error.issues.map((i) => `${i.path.join(".") || "verdict"}: ${i.message}`).join("; ");
+    return err(400, `invalid verdict (${detail})`);
+  }
   const verdict: Verdict = {
     runId: id,
-    verdict: parsed.verdict as Verdict["verdict"],
-    ...(typeof parsed.note === "string" ? { note: parsed.note } : {}),
+    verdict: input.data.verdict,
+    ...(input.data.note !== undefined ? { note: input.data.note } : {}),
     decidedAt: new Date().toISOString(),
   };
-  // EC-1 (M3): build o artefato EM MEMÓRIA antes de gravar — verdict inválido
-  // aborta ANTES de criar verdict órfão.
+  // EC-1 (M3): build o artefato EM MEMÓRIA antes de gravar — aborta ANTES de
+  // criar verdict órfão se o artefato não validar.
   let artifact;
   try {
     artifact = ReviewArtifactSchema.parse(buildReviewArtifact(env, verdict));

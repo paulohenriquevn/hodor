@@ -17,6 +17,23 @@ describe("DiffView (M8 — paridade do diff)", () => {
     expect(screen.getByText(/Sem baseline/)).toBeInTheDocument();
   });
 
+  it("diff_view_previous_mode_and_step_count_changed", () => {
+    const data: DiffResponse = {
+      mode: "previous",
+      curr: run,
+      baseline: run,
+      diff: {
+        stepCountChanged: true,
+        noiseChanged: false,
+        hasRegression: true,
+        steps: [],
+      },
+    };
+    render(<DiffView data={data} />);
+    expect(screen.getByText(/vs anterior/)).toBeInTheDocument();
+    expect(screen.getByText("número de steps mudou")).toBeInTheDocument(); // paridade SSR
+  });
+
   it("diff_view_shows_regression_and_changed_fields", () => {
     const data: DiffResponse = {
       mode: "golden",

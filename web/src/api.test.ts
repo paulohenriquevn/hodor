@@ -27,7 +27,11 @@ describe("api client (M8)", () => {
     await postVerdict("x", { verdict: "approved", note: "ok" });
     expect(f).toHaveBeenCalledWith(
       expect.stringContaining("/api/runs/x/verdict"),
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "content-type": "application/json" }),
+        body: JSON.stringify({ verdict: "approved", note: "ok" }),
+      }),
     );
   });
 });

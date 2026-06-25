@@ -26,7 +26,14 @@ export function RunDetailPage() {
             </div>
             <RunDetail run={data.run} verdict={data.verdict} />
             <ReviewArtifactLink runId={id} hasVerdict={data.verdict !== null} />
-            <VerdictForm runId={id} onDecided={() => setReload((n) => n + 1)} />
+            <VerdictForm
+              runId={id}
+              hasFailingAsserts={
+                data.verdict === null &&
+                data.run.steps.some((s) => (s.asserts ?? []).some((a) => !a.pass))
+              }
+              onDecided={() => setReload((n) => n + 1)}
+            />
           </>
         )}
       </Async>

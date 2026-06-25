@@ -18,9 +18,20 @@ describe("VerdictForm (M8 — registra verdict, nunca auto-aprova)", () => {
   });
 
   it("verdict_form_shows_error_on_400", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400 }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => ({ error: "invalid verdict (verdict: x)" }) }));
     render(<VerdictForm runId="00000000-0000-0000-0000-000000000001" />);
     fireEvent.click(screen.getByText("Rejeitar"));
     expect(await screen.findByRole("alert")).toHaveTextContent(/400/); // erro exibido, não engolido
+  });
+
+  it("verdict_form_warns_on_failing_asserts", () => {
+    // M6.1 safety: aprovar run com asserts falhando o torna o golden — avisar (paridade SSR)
+    render(<VerdictForm runId="00000000-0000-0000-0000-000000000001" hasFailingAsserts />);
+    expect(screen.getByRole("status")).toHaveTextContent(/asserts falhando/);
+  });
+
+  it("verdict_form_no_warning_when_asserts_pass", () => {
+    render(<VerdictForm runId="00000000-0000-0000-0000-000000000001" hasFailingAsserts={false} />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });

@@ -26,6 +26,7 @@ export function DiffView({ data }: { data: DiffResponse }) {
           <Badge variant="success">sem regressão</Badge>
         )}
         {diff.noiseChanged && <Badge variant="warning">regras de noise diferentes</Badge>}
+        {diff.stepCountChanged && <Badge variant="danger">número de steps mudou</Badge>}
       </div>
       {diff.steps.map((s) => (
         <Card key={s.stepIndex}>
