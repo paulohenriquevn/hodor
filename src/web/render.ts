@@ -6,33 +6,20 @@ import type {
   AssertResult,
   Verdict,
   RunDiff,
+  ListingItem,
 } from "../core/index.js";
+import { pickRenderer, truncate, MAX_BODY } from "../core/contentType.js";
 
-/** Item da listagem de runs (GET /). */
-export interface ListingItem {
-  runId: string;
-  name?: string;
-  createdAt: string;
-  stepCount: number;
-  allAssertsPass: boolean | null;
-  verdict: Verdict["verdict"] | null;
-  // M4: origem do cenário (badge "gerado pelo agente"). Ausente em runs M0-M3.
-  origin?: "agent-generated" | "human-authored";
-  // M6: este run regride vs o golden aprovado do cenário (badge "regressão"). Best-effort.
-  regression?: boolean;
-  // M6.1: este run É o golden (baseline aprovado atual) do cenário. Best-effort.
-  isGolden?: boolean;
-}
+// M8: ListingItem + o dispatch por content-type vivem no core (fonte única,
+// compartilhada com a SPA). Re-exportados aqui para os callers existentes do SSR.
+export type { ListingItem };
+export { pickRenderer, truncate };
 
 /**
  * Render puro (ADR D2): RunEnvelope → HTML. Sem I/O. Itera `steps` (suporta N — D3).
  * Todo conteúdo dinâmico é escapado (anti-XSS). Corpos não-texto são omitidos
  * explicitamente (tratamento binário completo é escopo M2).
  */
-
-const JSON_CT = /(application\/json|\+json)/i;
-const TEXTUAL = /(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|\+json|\+xml)/i;
-const MAX_BODY = 64 * 1024; // 64 KB — acima disso, trunca (risco #2)
 
 export function escapeHtml(s: string): string {
   return s
@@ -41,24 +28,6 @@ export function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;"); // F-sec-1: escapa também aspas simples (atributos single-quoted)
-}
-
-/**
- * Dispatch por content-type (ADR D2, espelha `getSuitableLenses` do hoppscotch):
- * "json" → pretty; "text" → <pre> escapado; "binary" → metadados (NÃO embute).
- * Case-insensitive; content-type ausente → "binary" (fallback seguro).
- */
-export function pickRenderer(contentType?: string): "json" | "text" | "binary" {
-  if (!contentType) return "binary";
-  if (JSON_CT.test(contentType)) return "json";
-  if (TEXTUAL.test(contentType)) return "text";
-  return "binary";
-}
-
-/** Trunca texto acima de `max` (risco #2) — não embute body gigante no HTML. */
-export function truncate(s: string, max = MAX_BODY): { text: string; truncated: boolean; originalLength: number } {
-  if (s.length <= max) return { text: s, truncated: false, originalLength: s.length };
-  return { text: s.slice(0, max), truncated: true, originalLength: s.length };
 }
 
 function headersTable(headers: Record<string, string>): string {

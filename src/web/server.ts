@@ -1,5 +1,4 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ZodError } from "zod";
 import {
@@ -14,13 +13,13 @@ import {
   defaultReviewsDir,
   findPreviousRun,
   findGoldenRun,
-  findGoldenRunIn,
   scenarioKey,
   diffRuns,
+  buildListing,
   type RunEnvelope,
   type Verdict,
 } from "../core/index.js";
-import { renderRun, renderListing, renderDiff, type ListingItem } from "./render.js";
+import { renderRun, renderListing, renderDiff } from "./render.js";
 
 /**
  * Adaptador web (ADR D1/D2/D5 do M2): servidor HTTP nativo, server-rendered, SEM
@@ -89,7 +88,7 @@ async function route(
 
   if (path === "/") {
     if (method !== "GET") return r405("GET");
-    const items = await listRuns(dir, verdictsDir);
+    const items = await buildListing(dir, verdictsDir);
     return { status: 200, contentType: "text/html; charset=utf-8", body: renderListing(items) };
   }
 
@@ -231,70 +230,6 @@ function readBody(req: IncomingMessage): Promise<string> {
       }
     });
   });
-}
-
-/**
- * Lista os runs (mais recente primeiro). EC-2: um run corrompido é PULADO (não
- * derruba a listagem inteira) — o fail-loud fica na página do run individual.
- */
-async function listRuns(dir: string, verdictsDir: string): Promise<ListingItem[]> {
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return [];
-  }
-  const files = entries.filter(
-    (e) => e.endsWith(".json") && RUN_ID_RE.test(e.slice(0, -".json".length)),
-  );
-  // F-arch-1: carrega TODOS os runs uma vez (evita O(N²) — findGoldenRun re-scaneava
-  // o diretório por run). loadedEnvs reusa o parse para o cálculo de golden por linha.
-  const loaded: Array<{ id: string; env: RunEnvelope; mtimeMs: number }> = [];
-  for (const file of files) {
-    const id = file.slice(0, -".json".length);
-    try {
-      loaded.push({ id, env: await loadRun(join(dir, file)), mtimeMs: (await stat(join(dir, file))).mtimeMs });
-    } catch {
-      continue; // EC-2: pula arquivo corrompido
-    }
-  }
-  const allEnvs = loaded.map((l) => l.env);
-  const items: Array<ListingItem & { mtimeMs: number }> = [];
-  for (const { id, env, mtimeMs } of loaded) {
-    const verdict = await loadVerdict(id, verdictsDir);
-    // M6 (DoD #4): este run regride vs o golden aprovado do cenário? best-effort.
-    let regression = false;
-    let isGolden = false;
-    try {
-      const golden = await findGoldenRunIn(allEnvs, scenarioKey(env), verdictsDir);
-      isGolden = golden !== null && golden.runId === id; // M6.1: este run É o baseline
-      regression = golden !== null && golden.runId !== id && diffRuns(golden, env).hasRegression;
-    } catch {
-      regression = false; // falha no cálculo do golden não derruba a listagem
-    }
-    items.push({
-      runId: id,
-      name: env.name,
-      createdAt: env.createdAt,
-      stepCount: env.steps.length,
-      allAssertsPass: passFail(env),
-      verdict: verdict?.verdict ?? null,
-      // M4 (DoD #2): origem do cenário p/ o badge "gerado pelo agente".
-      origin: env.provenance?.origin,
-      regression,
-      isGolden,
-      mtimeMs,
-    });
-  }
-  items.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return items.map(({ mtimeMs: _omit, ...item }) => item);
-}
-
-/** ✓ se todos os asserts de todos os steps passaram; null se não há asserts (run M0). */
-function passFail(env: RunEnvelope): boolean | null {
-  const asserts = env.steps.flatMap((s) => s.asserts ?? []);
-  if (asserts.length === 0) return null;
-  return asserts.every((a) => a.pass);
 }
 
 async function main(): Promise<void> {
