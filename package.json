@@ -11,20 +11,42 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "mcp": "tsx src/mcp/server.ts",
-    "web": "tsx src/web/server.ts"
+    "web": "tsx src/web/server.ts",
+    "api": "tsx src/api/server.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "build:web": "vite build --config web/vite.config.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
+    "@radix-ui/react-slot": "^1.3.0",
+    "@radix-ui/react-tabs": "^1.1.15",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "jsonpath-plus": "^10.4.0",
+    "lucide-react": "^0.469.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.4",
+    "tailwind-merge": "^2.6.1",
     "zod": "^3.25.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^22.0.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
     "@vitest/coverage-v8": "^4.1.9",
+    "autoprefixer": "^10.5.0",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.5.15",
+    "tailwindcss": "^3.4.19",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
+    "vite": "^6.4.3",
     "vitest": "^4.1.0"
   }
 }
