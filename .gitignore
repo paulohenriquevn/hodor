@@ -35,3 +35,6 @@ verdicts/
 # Ralph-loop local state (per-machine)
 ralph-loop.local.md
 .compaction-snapshots/
+
+# M8 — build da SPA (artefato)
+web/dist/

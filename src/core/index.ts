@@ -73,6 +73,10 @@ export { replaySuite, type SuiteReport, type SuiteItemResult, type SuiteStatus }
 // M7 — injeção de env/secrets
 export { redactSecretValues, scrubSecretsFromText } from "./redactSecrets.js";
 
+// M8 — listagem compartilhada (SSR + API REST) + dispatch por content-type (browser-safe)
+export { buildListing, RUN_ID_RE, type ListingItem } from "./listing.js";
+export { pickRenderer, truncate, renderBody, MAX_BODY } from "./contentType.js";
+
 // M3 — persistência versionável
 export { stableStringify } from "./stableStringify.js";
 export {

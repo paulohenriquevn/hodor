@@ -44,11 +44,13 @@ que passou".
 
 > Items in this list are off-limits for V1. To reconsider, write a new roadmap revision — do not silently expand scope.
 
+> **Revisão V3 (2026-06-20) — reabertura consciente de escopo.** O V3 (M8–M13) **reabre deliberadamente** dois itens que estavam fora no V1, porque a tese amadureceu de *viewer de revisão* para *híbrido agente-first* (o agente continua autor primário via MCP; o humano ganha autoria visual + UX SOTA): (a) **cliente de autoria visual** (montar/editar request e cenário na UI, não só via agente); (b) **importadores** (curl / OpenAPI / Postman collection). Permanecem **fora**: cloud / colaboração em tempo real / multi-tenant / contas / auth de plataforma; protocolos além de HTTP/REST (gRPC, GraphQL, WebSocket, SOAP). O diferencial (MCP + revisão humana como gate, humano único aprovador — contrato M2) é **preservado**, não substituído.
+
 ## Constraints
 
 | Category | Constraint |
 |---|---|
-| Stack | TypeScript/Node em todo o sistema. MCP server via SDK oficial (`@modelcontextprotocol/sdk`). Web app em TS (framework a decidir no M2). |
+| Stack | TypeScript/Node em todo o sistema. MCP server via SDK oficial (`@modelcontextprotocol/sdk`). Web app: **V1/V2 = SSR nativo ZERO-framework** (revisão é read + 1 POST); **V3 = SPA React (Vite + TS) com shadcn/ui + Tailwind**, consumindo uma **API REST fina** que é mais um adaptador sobre o core puro (fronteira DIP preservada). O SSR nativo permanece funcional durante a transição (paridade exigida no M8). |
 | Compliance / legal | Referências sob `knowledge-base/references/` retêm licenças próprias (read-only, estudo). Sem cópia de código copyleft (MPL do Step CI) para o produto. |
 | Deadline | Nenhum deadline rígido declarado. |
 | Team | Pequeno; CTO + agentes. Decisões de arquitetura centralizadas. |
@@ -227,15 +229,17 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
-### M7 — [ ] Injeção de env/secrets no run time
+### M7 — [x] Injeção de env/secrets no run time
 
 **Objective:** Permitir testar APIs reais **autenticadas** injetando segredos/variáveis de ambiente na execução, sem commitar o segredo — removendo o teto do gate de regressão (M6).
 
 **Definition of done:**
 
-- [ ] Interpolação de env/secret (`${{ env.NOME }}` ou equivalente) resolve de uma fonte de ambiente no run time, não só de variáveis capturadas de steps anteriores.
-- [ ] Segredos injetados NUNCA são persistidos em `runs/`/`reviews/`/`drafts/` (reusa o redator do M3/M4 em todos os sinks).
-- [ ] E2E: um cenário com header de auth via env executa contra um endpoint autenticado real e passa.
+- [x] Interpolação de env/secret (`${{ env.NOME }}` ou equivalente) resolve de uma fonte de ambiente no run time, não só de variáveis capturadas de steps anteriores.
+- [x] Segredos injetados NUNCA são persistidos em `runs/`/`reviews/`/`drafts/` (reusa o redator do M3/M4 em todos os sinks).
+- [x] E2E: um cenário com header de auth via env executa contra um endpoint autenticado real e passa.
+
+**Delivered:** v0.7.0 (2026-06-20, PR #7 — fecha o V2 e o ROADMAP V1+V2 inteiro). Injeção `${{ env.NOME }}` resolvida no run time de env vars allowlisted por prefixo **`HODOR_SECRET_*`** (strip do prefixo; `process.env` NUNCA exposto inteiro — fecha o vetor SSRF+exfiltração do M6). Segredo NUNCA persistido: `redactSecretValues` (core puro, longest-first do keploy) redige por VALOR em url/headers/body/captures + `response.statusText` + `name`, cobrindo as variantes `encodeURIComponent`/`encodeURI`/JSON-escaped, no **choke point** antes de todo `persistRun` e no `structuredContent`; error path redigido (`scrubSecretsFromText`) — alvo caído não vaza o segredo. Fonte lida no adaptador (`resolveHodorSecrets`), injetada no core via DIP (`RunScenarioDeps.secrets`); var ausente/curta = fail-fast + diagnóstico `secret_dropped` em stderr (só o nome). Remove o teto de auth do M6: E2E 401→200 com `Authorization: Bearer ${{ env.TOKEN }}` + grep prova ausência do segredo (raw E encodado) no run E no review. Review adversarial (6 agentes) achou e fechou 2 BLOCKER (statusText leak, árvore vermelha) + 5 HIGH (error-path leak, name/JSON-escaped, drop silencioso). 245 testes, redactSecrets 100% lines, 0 vulns, ZERO dep nova. Artefatos: `knowledge-base/plans/m7-env-secrets-plan.md`, `.../reviews/m7-env-secrets-review-2026-06-20.md` (READY_TO_MERGE), `.../releases/v0.7.0-release.md`, `.../roadmap-runs/M7-2026-06-20.md`. **Humano segue único aprovador (contrato M2 intacto).**
 
 **Dependencies:** M1 (interpolação), M3/M4 (redação de segredos). Desbloqueia o teto do M6.
 
@@ -245,18 +249,144 @@ time sabe que confia mais no trabalho dos agentes porque cada mudança traz prov
 
 ---
 
+## V3 — UX/DX de nível SOTA (React + autoria visual, híbrido agente-first)
+
+> Revisão de roadmap (2026-06-20) que abre o V3. O V1/V2 (M0–M7) provou e fechou o loop agente→execução→revisão→verdict→regressão→auth como **gate de regressão**. O V3 eleva a **experiência de dev** ao nível das ferramentas de mercado (Postman/Insomnia/Hoppscotch/Bruno): uma **SPA React** (Vite + shadcn/ui + Tailwind) sobre uma **API REST** fina que envelopa o core puro, dando **autoria visual** (request e cenário montados na UI), **ambientes & coleções**, **importadores** (curl/OpenAPI/Postman) e **produtividade** (code-gen, histórico pesquisável, polish). Posicionamento **híbrido agente-first**: o MCP/agente continua o caminho primário de autoria; a UI passa a servir revisão **E** autoria humana. **Humano segue único aprovador (contrato M2 intacto) — nenhuma feature nova auto-aprova.** Princípio transversal: **não reinventar** (Regra 9) — usar libs maduras (shadcn/ui, parsers de curl/OpenAPI, httpsnippet para code-gen) auditadas via `/deps-audit` por milestone.
+
+### M8 — [ ] Fundação V3: API REST sobre o core + SPA React (paridade de revisão)
+
+**Objective:** Provar a arquitetura nova ponta a ponta na fatia mais fina: expor o core via uma API REST fina e subir uma SPA React (Vite + TS + shadcn/ui + Tailwind) que replica a UI de revisão atual consumindo essa API — sem perder nada do SSR nativo existente.
+
+**Definition of done:**
+
+- [ ] API REST fina (novo adaptador sobre o core, fronteira DIP preservada) expõe: listar/obter runs, obter diff (vs anterior e vs golden), registrar verdict, listar/obter drafts e reviews. ZERO lógica de domínio nova — só delega ao core.
+- [ ] SPA React (Vite + TS + shadcn/ui + Tailwind) sobe e tem **paridade de leitura** com a web app SSR atual: lista de runs, detalhe req/resp/headers por step, asserts verde/vermelho, selo golden, badge de regressão.
+- [ ] E2E: o loop de revisão completo (abrir run → ver diff → registrar verdict) roda inteiro na SPA contra a API REST; o SSR nativo permanece funcional em paralelo.
+
+**Dependencies:** M2 (UI de revisão a replicar), M3 (artefatos), M5/M6 (diff + golden a exibir).
+
+**Top risks:**
+
+1. Duplicar lógica de domínio na API REST em vez de delegar ao core — mitigar mantendo a API como adaptador fino (igual ao MCP/web atuais), sem regras de negócio.
+2. Reescrever a UI e perder uma feature de revisão existente — mitigar exigindo paridade explícita e mantendo o SSR nativo vivo até a SPA cobrir tudo.
+
+---
+
+### M9 — [ ] Autoria visual de request + execução pela UI
+
+**Objective:** Dar ao **humano** a capacidade de montar um request (method/url/headers/body) num formulário React e executá-lo via API (reusando o core), o primeiro passo de autoria humana além do agente.
+
+**Definition of done:**
+
+- [ ] Formulário de autoria de request (method/url/headers/body) com validação na fronteira; envia à API que executa via core (`executeRequest`/`runScenario`) e retorna o run.
+- [ ] Resultado renderizado na mesma UI de inspeção do M8 (req/resp/headers/asserts).
+- [ ] Um request autorado pode ser salvo como cenário rascunho (reusa o fluxo de draft do M4, `provenance` = autorado por humano), entrando no fluxo de revisão.
+
+**Dependencies:** M8.
+
+**Top risks:**
+
+1. Reimplementar execução/captura no front em vez de chamar o core via API — mitigar executando SEMPRE no backend (core), o front só coleta input e renderiza.
+2. Validação fraca de URL/headers abrindo SSRF/injeção — mitigar reusando a validação de fronteira já existente (M4/M5) na API.
+
+---
+
+### M10 — [ ] Autoria visual de cenário multi-step (steps + asserts + captures)
+
+**Objective:** Elevar a autoria de "um request" para "cenário completo": editor visual de steps encadeados com asserts e captura de variáveis, reusando a engine do M1.
+
+**Definition of done:**
+
+- [ ] Editor de cenário: adicionar/remover/reordenar steps; cada step com request + asserts (`{source,op,value}`) + captures editáveis visualmente.
+- [ ] O cenário montado executa via API (reusa `runScenario`) e mostra resultado por step (pass/fail de cada assert + variáveis capturadas).
+- [ ] O cenário é salvo como draft no fluxo de revisão (M3/M4), `provenance` = humano; entra na fila de aprovação humana normal.
+
+**Dependencies:** M9.
+
+**Top risks:**
+
+1. Recriar o modelo de cenário no front e divergir do schema zod do core — mitigar tipando a UI a partir do mesmo schema (fonte única no core).
+2. Editor virar um construtor de fluxos genérico (scope creep) — mitigar cobrindo só o modelo de cenário que o core já executa (KISS/YAGNI).
+
+---
+
+### M11 — [ ] Ambientes & coleções (variáveis por ambiente + organização)
+
+**Objective:** Trazer o conceito central de Postman/Insomnia — variáveis por ambiente (dev/staging/prod) e organização de cenários em coleções/pastas — reusando a interpolação `${{ }}` (M1) e o canal de segredos (M7).
+
+**Definition of done:**
+
+- [ ] CRUD de ambientes (conjuntos nomeados de variáveis **não-secretas**) + seleção do ambiente ativo; as variáveis resolvem na execução (reusa `interpolate`).
+- [ ] Segredos continuam exclusivamente via `HODOR_SECRET_*` com redação por valor (M7 intacto) — variáveis de ambiente da UI NUNCA carregam segredo persistido; a fronteira secret/non-secret é explícita na UI.
+- [ ] Cenários organizáveis em coleções/pastas, navegáveis na SPA; a organização é persistida em arquivos git-friendly (consistente com M3).
+
+**Dependencies:** M10, M7 (interpolação + canal de segredos).
+
+**Top risks:**
+
+1. Usuário colar um segredo numa variável de ambiente comum (commitável) — mitigar separando visual e estruturalmente env-var (commitável) de secret (`HODOR_SECRET_*`, nunca persistido) e avisando na UI.
+2. Colisão de namespace entre vars de ambiente, captures de step e `env.*` de segredo — mitigar com precedência explícita e documentada (reusa o isolamento de namespace do M7).
+
+---
+
+### M12 — [ ] Importadores: curl / OpenAPI / Postman collection
+
+**Objective:** Reduzir o atrito de adoção importando de formatos que o dev já tem, usando libs maduras (Regra 9) — tudo entra como rascunho pendente de revisão humana.
+
+**Definition of done:**
+
+- [ ] Importar **comando curl** → request/cenário (lib pronta de parsing; nunca reinventar o parser).
+- [ ] Importar **OpenAPI** (paths/operations → requests candidatos com asserts básicos de status) — inspirado no peer `schemathesis`.
+- [ ] Importar **Postman collection** (v2.1) → cenários Hodor; itens importados entram como `draft` com `provenance.sourceKind` apropriado, pendentes de revisão (humano valida antes de aprovar).
+
+**Dependencies:** M10 (modelo de cenário/request alvo da importação).
+
+**Top risks:**
+
+1. Reinventar parsers de curl/OpenAPI/Postman — mitigar adotando libs auditadas via `/deps-audit` (Regra 9); só o mapeamento para o modelo Hodor é código nosso.
+2. Import malicioso (URL/host interno via SSRF, payload gigante) — mitigar tratando todo import como não-confiável: validação de fronteira + entra como draft, nunca executa/aprova sozinho.
+
+---
+
+### M13 — [ ] Produtividade & polish: code-gen + histórico pesquisável + UX final
+
+**Objective:** Fechar o V3 com as conveniências de produtividade e o acabamento visual que aproximam a percepção do Hodor das ferramentas SOTA.
+
+**Definition of done:**
+
+- [ ] Code-gen: "copiar como" gera snippet de um request em N linguagens (curl/fetch/axios/…) via lib madura (ex.: httpsnippet — a mesma família usada por Postman/Insomnia).
+- [ ] Histórico de execuções pesquisável/filtrável na SPA (por cenário, status, data; busca textual), respeitando a política de retenção do M5.
+- [ ] Polish de UX: tema claro/escuro, estados de loading/empty/erro explícitos, atalhos de teclado para o fluxo de revisão, acessibilidade básica (foco visível, labels, navegação por teclado).
+
+**Dependencies:** M8 (SPA/API), M11 (organização a pesquisar).
+
+**Top risks:**
+
+1. Polish virar redesign infinito — mitigar definindo um checklist fechado de estados/temas/atalhos e parando nele (YAGNI).
+2. Code-gen divergir do que o core executa de fato — mitigar gerando o snippet a partir do MESMO request normalizado que o core usa, não de um modelo paralelo.
+
+---
+
+## V3 success criteria
+
+**V3 ship criterion (measurable):** um humano consegue, **inteiramente na SPA React** (sem editar JSON à mão nem usar a CLI), montar OU importar (curl/OpenAPI/Postman) um cenário multi-step, selecionar um ambiente, executar contra uma API real **autenticada** (segredo via `HODOR_SECRET_*`, nunca commitado), ver o diff vs golden e registrar um verdict — e o agente continua fazendo o equivalente via MCP. Cumprido quando **M8–M13** estão `[x]`.
+
+**V3 DX metric (tracked post-launch):** *time-to-first-approved-scenario* — tempo do zero até o primeiro cenário aprovado por um novo usuário humano. Quando cai, a ferramenta ficou amigável de verdade (complementa a North-star de cobertura do V1/V2).
+
+---
+
 ## State-of-the-art references
 
 Peers cloned under `knowledge-base/references/`. See `_catalog.md` in that folder for license-gate decisions and study notes.
 
 | Peer | License | Why it's here | Supports milestone(s) |
 |---|---|---|---|
-| bruno | MIT | API client git-native (alt. Postman/Insomnia) — tese mais próxima | M0, M3 |
-| hoppscotch | MIT | API client web open-source — referência de UI de inspeção | M2 |
+| bruno | MIT | API client git-native (alt. Postman/Insomnia) — tese mais próxima; ambientes/coleções git-native | M0, M3, M11 |
+| hoppscotch | MIT | API client web open-source — referência de UI de inspeção e de autoria visual (request/cenário) + UX | M2, M8, M9, M10, M13 |
 | step-ci | MPL-2.0 | YAML multi-step + captures + asserts (⚠️ estagnado desde ago/2024) | M1 |
 | hurl | Apache-2.0 | HTTP testing plain-text, chain/captures/asserts | M1 |
 | keploy | Apache-2.0 | record/replay + regressão + anti-flaky (field normalization) + golden baseline | M4, M5, M6 |
-| schemathesis | MIT | geração de testes a partir de OpenAPI/GraphQL + edge cases | M4 |
+| schemathesis | MIT | geração de testes a partir de OpenAPI/GraphQL + edge cases; referência para o import de OpenAPI | M4, M12 |
 | mcp-typescript-sdk | Apache-2.0 / MIT¹ | SDK oficial para construir o MCP server em TS | M0, M4 |
 
 ¹ Projeto MCP em transição de MIT → Apache-2.0; ambas permissivas. Detalhes em `_catalog.md`.

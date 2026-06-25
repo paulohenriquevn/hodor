@@ -18,6 +18,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/) + [Semantic Versioning](
 
 ### Security
 
+## [0.8.0] - 2026-06-20
+
+### Added
+- **M8 — Fundação V3: API REST + SPA React (paridade de revisão):** abre o V3 (UX/DX SOTA, híbrido agente-first). Uma **API REST** fina (`src/api/server.ts`, `http` nativo — sem framework) expõe o core via JSON sob `/api/*`: `GET /api/runs`, `GET /api/runs/:id`, `GET /api/runs/:id/diff?vs=golden|previous`, `POST /api/runs/:id/verdict`, `GET /api/drafts`, `GET /api/drafts/:id`, `GET /api/reviews/:id` — ZERO regra de domínio (delega ao core, espelhando os adaptadores MCP/SSR). Uma **SPA React** (`web/`, Vite + TypeScript + shadcn/ui + Tailwind) com **paridade de leitura** da web SSR: listagem (selo golden 🏆, badge regressão ⚠, origem 🤖), detalhe req/resp/headers por step com status colorido por classe HTTP + tabs body/headers, diff vs golden/anterior, e o loop de verdict humano. Em produção a própria API serve a SPA buildada (`web/dist`) + SPA fallback; em dev, Vite proxya `/api`. Scripts: `npm run api`, `npm run dev:web`, `npm run build:web`. O SSR nativo (`npm run web`) permanece funcional em paralelo. Provado pelo E2E `e2e_m8_review_loop_parity_in_spa` (lista→detalhe→verdict na SPA contra a API real). 286 testes (node + jsdom), 0 vulnerabilidades. **Humano segue único aprovador (contrato M2 intacto).**
+
+
+### Changed
+- **`buildListing` extraído para o core** (`src/core/listing.ts`) a partir de `web/server.ts::listRuns` — fonte única da listagem (golden/regressão/origem) consumida pelo SSR e pela API REST (DRY). `pickRenderer`/`truncate`/`renderBody` movidos para `src/core/contentType.ts` (browser-safe) — mesma lógica de dispatch por content-type no SSR e na SPA (paridade real).
+
 ## [0.7.0] - 2026-06-20
 
 ### Added
